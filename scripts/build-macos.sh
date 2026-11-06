@@ -7,5 +7,7 @@ rustup toolchain install stable --profile minimal
 if ! cargo tauri --version 2>/dev/null | grep -Eq '1\.[0-9]+'; then
   cargo +stable install tauri-cli --version 1.6.3 --locked
 fi
+cargo +stable generate-lockfile --manifest-path src-tauri/Cargo.toml
+python3 scripts/prepare_legacy_lock.py
 cargo +1.77.2 tauri build
 printf '\nGenerated app/bundles: src-tauri/target/release/bundle/\n'

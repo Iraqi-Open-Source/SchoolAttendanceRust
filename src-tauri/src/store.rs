@@ -342,8 +342,10 @@ impl AppDb {
         let schema:i64=source.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('classes','sections','students','attendance','settings','alert_rules','holidays')",[],|r|r.get(0)).map_err(msg)?;
         if schema!=7{return Err("الملف ليس نسخة احتياطية متوافقة مع دفتر الغياب".into())}
         let mut target=self.db()?;
-        let backup=rusqlite::backup::Backup::new(&source,&mut target).map_err(msg)?;
-        backup.run_to_completion(100,Duration::from_millis(100),None).map_err(msg)?;
+        {
+            let backup=rusqlite::backup::Backup::new(&source,&mut target).map_err(msg)?;
+            backup.run_to_completion(100,Duration::from_millis(100),None).map_err(msg)?;
+        }
         target.pragma_update(None,"foreign_keys","ON").map_err(msg)?;
         Ok(())
     }
@@ -368,17 +370,18 @@ fn report_with(conn:&Connection,section_id:Option<i64>)->R<Vec<StudentReport>> {
     let mut report=Vec::new();
     for entry in results {
         let (student_id,student_name,class_name,section_name,enrollment,absent,excused,present)=entry.map_err(msg)?;
-        let counted_absent=if enrollment=="external"{0}else{absent};
+        let external=enrollment=="external";
+        let counted_absent=if external{0}else{absent};
         let days=counted_absent as f64 / conf.lessons_per_day as f64;
-        let alerts=if enrollment=="external" {vec![]}else{
+        let alerts=if external {vec![]}else{
             conf.alerts.iter().filter(|a|a.enabled && {
                 let value=if a.metric=="days" {days} else {counted_absent as f64};
                 if a.operator==">" {value>a.threshold} else {value>=a.threshold}
             }).cloned().collect()
         };
         report.push(StudentReport{student_id,student_name,class_name,section_name,enrollment,
-            absent_lessons:counted_absent,excused_lessons:if enrollment=="external"{0}else{excused},
-            present_lessons:if enrollment=="external"{0}else{present},absent_days:days,alerts});
+            absent_lessons:counted_absent,excused_lessons:if external{0}else{excused},
+            present_lessons:if external{0}else{present},absent_days:days,alerts});
     }
     Ok(report)
 }

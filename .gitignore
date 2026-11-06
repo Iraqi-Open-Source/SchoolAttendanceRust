@@ -1,0 +1,51 @@
+# Rust / Tauri
+src-tauri/target/
+target/
+**/*.rs.bk
+
+# Frontend build output
+dist/
+dist-ssr/
+ui/dist/
+
+# Node (if a frontend toolchain is added later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python helpers
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases and backups
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
