@@ -1,0 +1,51 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": "../ui",
+    "distDir": "../ui",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "دفتر الغياب",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "save": true,
+        "open": true
+      }
+    },
+    "windows": [
+      {
+        "title": "دفتر الغياب | إدارة الحضور المدرسي",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 920,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' tauri: asset:; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.school.attendance",
+      "shortDescription": "مدير الغيابات والحضور المدرسي",
+      "category": "Education",
+      "windows": {
+        "webviewInstallMode": {
+          "type": "skip"
+        }
+      },
+      "macOS": {
+        "minimumSystemVersion": "10.15"
+      }
+    }
+  }
+}

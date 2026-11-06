@@ -1,0 +1,86 @@
+name: Build School Attendance (Windows and macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows 7-11 x64 EXE
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.2
+      - name: Generate an MSRV-compatible dependency lock
+        shell: pwsh
+        working-directory: src-tauri
+        run: |
+          cargo +stable generate-lockfile
+          python ../scripts/prepare_legacy_lock.py
+      - name: Test database and attendance rules
+        shell: pwsh
+        working-directory: src-tauri
+        run: cargo +1.77.2 test --locked
+      - name: Compile real Windows executable
+        shell: pwsh
+        working-directory: src-tauri
+        run: cargo +1.77.2 build --release --features custom-protocol --locked
+      - name: Check binary and stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $binary = 'src-tauri/target/release/school_attendance.exe'
+          if (-not (Test-Path $binary)) { throw "EXE was not built: $binary" }
+          Copy-Item $binary dist/SchoolAttendance-Windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SchoolAttendance-Windows-x64-EXE
+          path: dist/SchoolAttendance-Windows-x64.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS APP (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.2
+      - name: Generate an MSRV-compatible dependency lock
+        working-directory: src-tauri
+        run: |
+          cargo +stable generate-lockfile
+          python3 ../scripts/prepare_legacy_lock.py
+      - name: Test database and attendance rules
+        working-directory: src-tauri
+        run: cargo +1.77.2 test --locked
+      - name: Compile Mach-O executable
+        working-directory: src-tauri
+        run: cargo +1.77.2 build --release --features custom-protocol --locked
+      - name: Create and ad-hoc sign macOS app bundle
+        run: python3 scripts/package_macos.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SchoolAttendance-macOS-${{ matrix.arch }}-APP
+          path: dist/SchoolAttendance-macOS-*.zip
+          if-no-files-found: error

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>دفتر الغياب</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">✓</span><div><strong>دفتر الغياب</strong><small>إدارة الحضور المدرسي</small></div></div>
+    <div class="nav-label">لوحة التحكم</div>
+    <nav id="nav">
+      <button class="nav-item active" data-page="home"><span>▦</span> الرئيسية</button>
+      <button class="nav-item" data-page="attendance"><span>☑</span> تسجيل الحضور</button>
+      <button class="nav-item" data-page="students"><span>♙</span> الطلاب</button>
+      <button class="nav-item" data-page="classes"><span>▤</span> الصفوف والشعب</button>
+      <button class="nav-item" data-page="reports"><span>▥</span> التقارير</button>
+      <button class="nav-item" data-page="alerts"><span>⚑</span> قواعد التنبيه</button>
+      <button class="nav-item" data-page="holidays"><span>▣</span> العطل</button>
+      <button class="nav-item" data-page="settings"><span>⚙</span> الإعدادات والنسخ</button>
+    </nav>
+    <div class="side-footer"><span class="online-dot"></span> يعمل دون إنترنت <small>SQLite • Rust • v1.0</small></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div><div class="eyebrow">نظام الغيابات</div><h1 id="page-title">لوحة المتابعة</h1></div><div class="top-actions"><span class="top-date" id="current-date"></span><span class="user-tag" id="school-label">مدرستي</span></div></header>
+    <div class="page-body">
+      <section class="page active" id="page-home">
+        <div class="intro"><div><h2>نظرة عامة على الحضور</h2><p>تابع الدوام والتنبيهات من مكان واحد.</p></div><button class="btn primary" data-goto="attendance">+ تسجيل غياب اليوم</button></div>
+        <div class="stats-grid" id="dashboard-cards"></div>
+        <div class="panel"><div class="panel-head"><div><h3>الطلاب الذين تجاوزوا قواعد التنبيه</h3><p>حساب التنبيهات خلال نطاق السنة الدراسية المحدد</p></div><button class="btn subtle" data-goto="reports">كل التقارير</button></div><div id="home-alerts"></div></div>
+        <div class="tip">💡 كل <strong id="tip-lessons">5</strong> دروس غياب = يوم غياب مكافئ. يمكن تعديل ذلك من الإعدادات.</div>
+      </section>
+      <section class="page" id="page-attendance">
+        <div class="panel"><div class="panel-head"><div><h3>دفتر الحضور اليومي</h3><p>كل الطلاب يبدأون بحالة <b>حاضر ✓</b>، وغيّر فقط الدروس المطلوبة ثم احفظ.</p></div><span class="pill neutral">حفظ جماعي</span></div>
+          <div class="filters four">
+            <label>الصف<select id="att-class"></select></label>
+            <label>الشعبة<select id="att-section"></select></label>
+            <label>التاريخ<input type="date" id="att-date" /></label>
+            <label>عدد دروس هذا اليوم<input type="number" id="att-lessons" min="1" max="20" /></label>
+          </div>
+          <div class="action-row"><button class="btn secondary" id="att-load">تحديث السجل</button><button class="btn subtle" id="att-all-present">الكل حاضر</button><button class="btn subtle" id="att-all-absent">الكل غائب</button><button class="btn subtle" id="att-all-excused">الكل مجاز</button><span class="push" id="att-dirty"></span><button class="btn danger-outline" id="att-clear">حذف سجل اليوم</button><button class="btn primary" id="att-save">✓ حفظ الغيابات</button></div>
+        </div>
+        <div class="panel"><div class="panel-head"><div><h3>قائمة الطلاب</h3><p>اضغط على مربع الدرس للتبديل: حاضر ← غائب ← مجاز. يمكن تحديد يوم كامل للطالب دفعة واحدة.</p></div><div class="legend"><span><i class="dot present"></i> حاضر</span><span><i class="dot absent"></i> غائب</span><span><i class="dot excused"></i> مجاز</span></div></div>
+          <div class="sheet-wrap" id="att-table"></div><div class="sheet-footer" id="att-summary"></div>
+        </div>
+      </section>
+      <section class="page" id="page-students">
+        <div class="panel"><div class="panel-head"><div><h3>إدارة الطلاب</h3><p>طلاب الانتساب لا يظهرون ضمن دفتر الدوام ولا تُحتسب عليهم الغيابات.</p></div><button class="btn secondary" id="import-toggle">+ إضافة عدة طلاب</button></div>
+          <div class="filters two"><label>الصف<select id="students-class"></select></label><label>الشعبة<select id="students-section"></select></label></div>
+          <form id="student-form" class="form-row student-form">
+            <input type="hidden" id="student-id" />
+            <label>اسم الطالب<input id="student-name" required maxlength="150" placeholder="الاسم الرباعي" /></label>
+            <label>رقم الطالب (اختياري)<input id="student-code" maxlength="80" placeholder="الرقم أو الرمز" /></label>
+            <label>نوع الدوام<select id="student-enrollment"><option value="regular">اعتيادي</option><option value="external">انتساب</option></select></label>
+            <label>ملاحظات<input id="student-notes" maxlength="600" placeholder="اختياري" /></label>
+            <button class="btn primary" type="submit" id="student-submit">إضافة الطالب</button><button class="btn subtle hidden" type="button" id="student-cancel">إلغاء</button>
+          </form>
+          <div class="import-area hidden" id="import-area"><label>طالب في كل سطر<textarea id="import-names" rows="5" placeholder="أحمد محمد علي&#10;سارة خالد حسن"></textarea></label><div class="action-row"><label>نوع الدوام<select id="import-type"><option value="regular">اعتيادي</option><option value="external">انتساب</option></select></label><button class="btn primary" id="import-confirm">استيراد الأسماء</button></div></div>
+        </div>
+        <div class="panel"><div class="panel-head"><h3>الطلاب المسجلون</h3><input type="search" id="students-search" placeholder="البحث عن طالب..." /></div><div id="students-table"></div></div>
+      </section>
+      <section class="page" id="page-classes">
+        <div class="grid-2"><div class="panel"><div class="panel-head"><h3>الصفوف الدراسية</h3></div><form class="inline-form" id="class-form"><input id="class-name" placeholder="مثال: الخامس العلمي" required maxlength="100" /><button class="btn primary" type="submit">+ إضافة صف</button></form><div id="classes-list"></div></div>
+        <div class="panel"><div class="panel-head"><h3>الشعب</h3></div><form class="form-stack" id="section-form"><label>الصف<select id="section-parent"></select></label><div class="inline-form"><input id="section-name" placeholder="مثال: أ" required maxlength="100" /><button class="btn primary" type="submit">+ إضافة شعبة</button></div></form><div id="sections-list"></div></div></div>
+      </section>
+      <section class="page" id="page-reports">
+        <div class="panel"><div class="panel-head"><div><h3>تقرير الغيابات السنوي</h3><p id="report-period"></p></div><button class="btn primary" id="report-export">↓ تصدير CSV لإكسل</button></div>
+          <div class="filters two"><label>الشعبة<select id="report-section"><option value="">جميع الشعب</option></select></label><label>بحث باسم الطالب<input type="search" id="report-search" placeholder="اسم الطالب..." /></label></div>
+          <div id="reports-table"></div><div class="sheet-footer" id="report-summary"></div>
+        </div>
+      </section>
+      <section class="page" id="page-alerts">
+        <div class="panel"><div class="panel-head"><div><h3>قواعد التنبيه المخصصة</h3><p>حدد الاسم واللون وحدّ الغياب. تدعم المقارنة بالأيام المكافئة أو بعدد الدروس.</p></div></div>
+        <form id="alert-form" class="form-row alert-form">
+          <input type="hidden" id="alert-id" />
+          <label>اسم التنبيه<input id="alert-name" required maxlength="100" placeholder="مثال: إنذار أول" /></label>
+          <label>نوع العدّ<select id="alert-metric"><option value="days">أيام مكافئة</option><option value="lessons">دروس غياب</option></select></label>
+          <label>المقارنة<select id="alert-operator"><option value=">">أكثر من (>)</option><option value=">=">يساوي أو يتجاوز (≥)</option></select></label>
+          <label>الحد<input type="number" id="alert-threshold" min="0" max="10000" step="0.2" value="8" required /></label>
+          <label>اللون<input type="color" id="alert-color" value="#dc454f" /></label>
+          <label class="toggle-box"><input type="checkbox" id="alert-enabled" checked /> مفعّل</label>
+          <button class="btn primary" type="submit" id="alert-submit">+ حفظ التنبيه</button><button class="btn subtle hidden" type="button" id="alert-cancel">إلغاء</button>
+        </form></div>
+        <div class="panel"><div class="panel-head"><h3>التنبيهات الحالية</h3></div><div id="alerts-list"></div></div>
+      </section>
+      <section class="page" id="page-holidays">
+        <div class="panel"><div class="panel-head"><div><h3>الأيام غير الدراسية</h3><p>يُمنع تسجيل الغياب في تاريخ معلن عطلة. لا تُنشئ العطلة أي غيابات.</p></div></div>
+          <form id="holiday-form" class="inline-form"><input type="date" required id="holiday-date" /><input id="holiday-name" required maxlength="150" placeholder="اسم العطلة" /><button class="btn primary" type="submit">+ تسجيل عطلة</button></form>
+          <div id="holidays-list"></div>
+        </div>
+      </section>
+      <section class="page" id="page-settings">
+        <div class="panel"><div class="panel-head"><div><h3>إعدادات المدرسة والدوام</h3><p>تؤثر قاعدة عدد الدروس على تحويل مجموع غيابات الدروس إلى أيام مكافئة في التقارير.</p></div></div>
+          <form id="settings-form" class="settings-grid"><label>اسم المدرسة<input id="school-name" required maxlength="150" /></label><label>كل كم درس غياب = يوم؟<input id="settings-lessons" type="number" min="1" max="20" required /></label><label>بداية السنة الدراسية<input id="year-start" type="date" required /></label><label>نهاية السنة الدراسية<input id="year-end" type="date" required /></label><div class="settings-actions"><button class="btn primary" type="submit">✓ حفظ الإعدادات</button></div></form>
+        </div>
+        <div class="panel"><div class="panel-head"><div><h3>نسخة احتياطية من SQLite</h3><p>البيانات محفوظة على جهازك. أنشئ نسخة دورياً على قرص آخر، أو استرجع نسخة سابقة.</p></div></div><div class="action-row"><button class="btn secondary" id="backup-save">↓ إنشاء نسخة SQLite</button><button class="btn danger-outline" id="backup-restore">↺ استعادة نسخة سابقة</button></div><p class="muted small">تنبيه: الاستعادة تستبدل كل البيانات الحالية؛ أنشئ نسخة احتياطية قبلها.</p></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="toast hidden" id="toast" role="status"></div>
+<div class="dialog-cover hidden" id="modal-cover"><div class="dialog" role="dialog" aria-modal="true"><div class="dialog-head"><h3 id="modal-title"></h3><button class="icon-button" id="modal-close" aria-label="إغلاق">×</button></div><div id="modal-content"></div><div class="dialog-footer"><button class="btn secondary" id="modal-ok">إغلاق</button></div></div></div>
+<script src="app.js" defer></script>
+</body>
+</html>
