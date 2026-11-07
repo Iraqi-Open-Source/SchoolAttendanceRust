@@ -327,6 +327,13 @@ impl AppDb {
         }
         fs::write(path,csv).map_err(msg)
     }
+    pub fn save_export(&self, path:&str, content:&str)->R<()> {
+        let path=clean(path,"مسار التصدير",2000)?;
+        if !path.to_lowercase().ends_with(".csv") { return Err("احفظ الملف بامتداد csv لفتحه في إكسل".into()); }
+        if content.len()>2_000_000 { return Err("التقرير أكبر من الحد المسموح".into()); }
+        let body=if content.starts_with('\u{feff}') { content.to_owned() } else { format!("\u{feff}{content}") };
+        fs::write(path, body).map_err(msg)
+    }
     pub fn backup(&self,path:&str)->R<()> {
         let path=clean(path,"مسار النسخة",2000)?;
         let source=self.db()?;

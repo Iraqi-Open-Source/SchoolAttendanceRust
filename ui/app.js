@@ -9,6 +9,7 @@ const nextStatus = status => status === 'present' ? 'absent' : status === 'absen
 const attendanceMark = status => `<span class="pill ${status==='absent'?'external':'regular'}">${safe(names[status])}</span>`;
 let groups = [], config = null, page = 'home', sheet = [], sheetDirty = false, sheetRequest = 0;
 let students = [], reports = [], holidays = [];
+let studentReport = null;
 let toastTimer = null;
 
 async function api(command, args={}) {
@@ -169,13 +170,94 @@ function renderReports(){
     `<tr><td class="report-name">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="pill ${r.enrollment==='external'?'external':'regular'}">${r.enrollment==='external'?'انتساب':'اعتيادي'}</span></td><td class="number">${r.enrollment==='external'?'—':r.absent_lessons}</td><td class="number">${r.enrollment==='external'?'معفي':r.absent_days.toFixed(2)}</td><td class="number">${r.excused_lessons}</td><td>${alertTags(r.alerts)}</td><td><button class="btn mini outline" data-action="history" data-id="${r.student_id}">عرض</button></td></tr>`).join('')):empty('لا توجد نتائج');
   $('report-summary').textContent=`${rs.length} طالب • ${rs.filter(s=>s.enrollment==='regular').reduce((n,s)=>n+s.absent_lessons,0)} درس غياب • ${rs.filter(s=>s.alerts.length).length} طالب لديه تنبيهات`;
 }
+function groupAbsences(hist){
+  const days=[]; let current=null;
+  for(const row of hist){
+    if(!current||current.date!==row.date){current={date:row.date,rows:[]};days.push(current);}
+    current.rows.push(row);
+  }
+  const lines=[];
+  for(const day of days){
+    if(day.rows.length&&day.rows.every(x=>x.status==='absent')) lines.push({date:day.date,lesson:'اليوم كامل',status:'absent',day:true});
+    else for(const row of day.rows){ if(row.status!=='present') lines.push({date:row.date,lesson:String(row.lesson),status:row.status,day:false}); }
+  }
+  return lines;
+}
+function absenceSummary(r, lines){
+  if(r.enrollment==='external') return 'انتساب (معفي من احتساب الغياب)';
+  const full=lines.filter(x=>x.day).length;
+  const partial=lines.filter(x=>!x.day&&x.status==='absent').length;
+  return `${r.absent_lessons} درس غياب = ${r.absent_days.toFixed(2)} يوم مكافئ • ${full} يوم غياب كامل • ${partial} درس غياب متفرق`;
+}
+function absenceTable(lines){
+  return lines.length?table(['التاريخ','الدرس','الحالة'],lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.lesson)}</td><td>${attendanceMark(x.status)}</td></tr>`).join('')):empty('لا توجد غيابات أو إجازات في السنة الحالية');
+}
 async function showHistory(id){
   const r=reports.find(x=>x.student_id===id);if(!r)return;
-  const hist=await api('get_history',{studentId:id});
-  const rows=hist.filter(x=>x.status!=='present');
-  const content=`<p class="muted">${safe(r.class_name)} / ${safe(r.section_name)} • ${r.enrollment==='external'?'انتساب (معفي)':`${r.absent_lessons} درس غياب = ${r.absent_days.toFixed(2)} يوم مكافئ`}</p>`+
-    (rows.length?table(['التاريخ','الدرس','الحالة'],rows.map(x=>`<tr><td>${safe(x.date)}</td><td>${x.lesson}</td><td>${attendanceMark(x.status)}</td></tr>`).join('')):empty('لا توجد غيابات أو إجازات في السنة الحالية'));
+  const lines=groupAbsences(await api('get_history',{studentId:id}));
+  studentReport={report:r,lines};
+  const content=`<p class="muted">${safe(r.class_name)} / ${safe(r.section_name)} • ${safe(absenceSummary(r,lines))}</p>`+
+    `<div class="action-row report-actions"><button class="btn mini secondary" data-action="print-summary" data-id="${r.student_id}">طباعة تقرير إجمالي</button><button class="btn mini secondary" data-action="print-detail" data-id="${r.student_id}">طباعة تقرير مفصل</button><button class="btn mini primary" data-action="export-student" data-id="${r.student_id}">تصدير Excel</button></div>`+
+    absenceTable(lines);
   modal(`سجل الطالب: ${r.student_name}`,content);
+}
+function reportFacts(r, lines){
+  const alerts=r.alerts.length?r.alerts.map(a=>a.name).join('، '):'لا توجد';
+  return [
+    ['المدرسة', config?config.school_name:''],
+    ['الطالب', r.student_name],
+    ['الصف / الشعبة', `${r.class_name} / ${r.section_name}`],
+    ['نوع الدوام', r.enrollment==='external'?'انتساب':'اعتيادي'],
+    ['الفترة', config?`${config.year_start} إلى ${config.year_end}`:''],
+    ['دروس الغياب', r.enrollment==='external'?'معفي':String(r.absent_lessons)],
+    ['أيام الغياب المكافئة', r.enrollment==='external'?'معفي':r.absent_days.toFixed(2)],
+    ['أيام الغياب الكاملة', String(lines.filter(x=>x.day).length)],
+    ['دروس الغياب المتفرقة', String(lines.filter(x=>!x.day&&x.status==='absent').length)],
+    ['دروس الإجازة', String(r.excused_lessons)],
+    ['دروس الحضور', String(r.present_lessons)],
+    ['التنبيهات', alerts]
+  ];
+}
+function printStudentReport(kind){
+  if(!studentReport)return;
+  const {report:r,lines}=studentReport;
+  const detailed=kind==='detail';
+  const facts=reportFacts(r,lines).map(([k,v])=>`<tr><th>${safe(k)}</th><td>${safe(v)}</td></tr>`).join('');
+  const detail=detailed?`<h2>تفاصيل الغياب</h2><table><thead><tr><th>التاريخ</th><th>الدرس</th><th>الحالة</th></tr></thead><tbody>${lines.length?lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.lesson)}</td><td>${safe(names[x.status]||x.status)}</td></tr>`).join(''):'<tr><td colspan="3">لا توجد غيابات أو إجازات</td></tr>'}</tbody></table>`:'';
+  printDocument(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي', `<h1>${detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي'}</h1><table class="facts">${facts}</table>${detail}<p class="note">اليوم الذي غاب فيه الطالب عن كل الدروس يظهر مرة واحدة. الغياب في بعض الدروس يظهر لكل درس.</p>`);
+}
+function csvCell(value){
+  const text=String(value??'');
+  const formula=/^[\s]*[=+\-@\t\r]/.test(text);
+  return `"${(formula?"'"+text:text).replace(/"/g,'""')}"`;
+}
+function csvLine(cells){return cells.map(csvCell).join(',')+'\r\n';}
+async function exportStudentExcel(){
+  if(!studentReport)return;
+  const {report:r,lines}=studentReport;
+  const path=await window.__TAURI__.dialog.save({defaultPath:`تقرير-غياب-${r.student_name.replace(/[\\/:*?"<>|]/g,' ').trim().slice(0,80)||'طالب'}.csv`,filters:[{name:'Excel CSV',extensions:['csv']}]});
+  if(!path)return;
+  let csv=csvLine(['البيان','القيمة']);
+  for(const [k,v] of reportFacts(r,lines)) csv+=csvLine([k,v]);
+  csv+='\r\n'+csvLine(['التاريخ','الدرس','الحالة']);
+  if(!lines.length) csv+=csvLine(['','','لا توجد غيابات أو إجازات']);
+  for(const line of lines) csv+=csvLine([line.date,line.lesson,names[line.status]||line.status]);
+  await api('save_export',{path,content:csv});
+  toast('تم تصدير تقرير الطالب إلى ملف يفتح في إكسل');
+}
+function printDocument(title, body){
+  const frame=document.createElement('iframe');
+  frame.setAttribute('aria-hidden','true');
+  frame.style.cssText='position:fixed;width:0;height:0;border:0';
+  document.body.appendChild(frame);
+  const doc=frame.contentWindow.document;
+  doc.open();
+  doc.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${safe(title)}</title><style>body{font-family:Tahoma,"Segoe UI",Arial,sans-serif;color:#172b36;margin:24px}h1{font-size:22px;margin:0 0 16px}h2{font-size:16px;margin:22px 0 8px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #c5d0d6;padding:8px;text-align:right}th{background:#f3f6f8}.facts th{width:220px;background:#f7fafb}.note{color:#5d7380;font-size:12px;margin-top:18px}</style></head><body>${body}</body></html>`);
+  doc.close();
+  const win=frame.contentWindow;
+  const cleanup=()=>setTimeout(()=>frame.remove(),400);
+  win.onafterprint=cleanup;
+  setTimeout(()=>{win.focus();win.print();},250);
 }
 
 function renderAlerts() {
@@ -234,6 +316,9 @@ async function dispatchAction(el){
     await api('delete_student',{id});await loadStudents();toast('تم حذف الطالب');return;
   }
   if(action==='history'){await showHistory(id);return;}
+  if(action==='print-summary'){printStudentReport('summary');return;}
+  if(action==='print-detail'){printStudentReport('detail');return;}
+  if(action==='export-student'){await exportStudentExcel();return;}
   if(action==='edit-alert'){
     const a=config.alerts.find(x=>x.id===id);if(!a)return;
     $('alert-id').value=a.id;$('alert-name').value=a.name;$('alert-metric').value=a.metric;$('alert-operator').value=a.operator;

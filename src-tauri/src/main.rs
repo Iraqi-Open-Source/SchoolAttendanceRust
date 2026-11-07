@@ -86,6 +86,9 @@ fn get_dashboard(db: State<'_, AppDb>) -> ApiResult<store::Dashboard> { db.dashb
 fn export_report(db: State<'_, AppDb>, path: String, section_id: Option<i64>) -> ApiResult<()> { db.export_report(&path, section_id) }
 
 #[tauri::command]
+fn save_export(db: State<'_, AppDb>, path: String, content: String) -> ApiResult<()> { db.save_export(&path, &content) }
+
+#[tauri::command]
 fn backup_db(db: State<'_, AppDb>, path: String) -> ApiResult<()> { db.backup(&path) }
 
 #[tauri::command]
@@ -105,7 +108,7 @@ fn main() {
             get_students, upsert_student, delete_student, import_students,
             get_sheet, save_sheet, clear_sheet, get_config, save_config,
             save_alert, delete_alert, get_holidays, set_holiday, delete_holiday,
-            get_report, get_history, get_dashboard, export_report, backup_db, restore_db
+            get_report, get_history, get_dashboard, export_report, save_export, backup_db, restore_db
         ])
         .run(tauri::generate_context!())
         .expect("application initialization failed");
