@@ -494,9 +494,13 @@ mod tests {
     fn add(db:&AppDb,section:i64,enrollment:&str)->i64 {
         db.upsert_student(StudentInput{id:None,section_id:section,name:format!("طالب {}",enrollment),code:"".into(),enrollment:enrollment.into(),notes:"".into()}).unwrap()
     }
+    fn no_weekly_off(db:&AppDb){
+        let c=db.config().unwrap();
+        db.save_config(&c.school_name,c.lessons_per_day as u32,&c.year_start,&c.year_end,vec![]).unwrap();
+    }
     #[test]
     fn conversion_and_alert_after_eight_days(){
-        let (db,_,section)=setup();let id=add(&db,section,"regular");
+        let (db,_,section)=setup();no_weekly_off(&db);let id=add(&db,section,"regular");
         for d in 1..=9 {db.save_sheet(section,&format!("2026-10-{:02}",d),5,vec![AttendanceRowInput{student_id:id,statuses:vec!["absent".into();5]}]).unwrap()}
         let r=db.report(Some(section)).unwrap();
         assert_eq!(r[0].absent_lessons,45);assert_eq!(r[0].absent_days,9.0);assert_eq!(r[0].full_absent_days,9);assert_eq!(r[0].partial_absent_lessons,0);assert_eq!(r[0].absence_text,"غائب 9 أيام");assert_eq!(r[0].alerts[0].name,"تجاوز ٨ أيام");
