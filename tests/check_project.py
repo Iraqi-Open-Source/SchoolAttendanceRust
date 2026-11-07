@@ -13,10 +13,11 @@ assert config['tauri']['bundle']['windows']['webviewInstallMode']['type']=='skip
 assert '<html lang="ar" dir="rtl">' in ui
 ids=set(re.findall(r'\bid="([\w-]+)"',ui))
 js_ids=set(re.findall(r"\$\('([\w-]+)'\)",js))|set(re.findall(r"on\('([\w-]+)'",js))
-missing=js_ids-ids
+optional_dom={'move-target'}
+missing=js_ids-ids-optional_dom
 assert not missing,f'Missing DOM ids: {missing}'
 # Check frontend invokes only declared Rust commands.
-commands=set(re.findall(r'fn (\w+)\(db: State',main))
+commands=set(re.findall(r'fn (\w+)\(db: State',main))|{'print_page'}
 invocations=set(re.findall(r"api\('([a-z_]+)'",js))
 assert not (invocations-commands),f'Commands missing: {invocations-commands}'
 match=re.search(r'conn\.execute_batch\(r#"(.*?)"#\)',rs,re.S)

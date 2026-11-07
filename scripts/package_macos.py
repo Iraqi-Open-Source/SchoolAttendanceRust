@@ -38,8 +38,8 @@ info = {
     'CFBundleInfoDictionaryVersion': '6.0',
     'CFBundleName': 'SchoolAttendance',
     'CFBundlePackageType': 'APPL',
-    'CFBundleShortVersionString': '1.0.0',
-    'CFBundleVersion': '1.0.0',
+    'CFBundleShortVersionString': '1.1.0',
+    'CFBundleVersion': '1.1.0',
     'LSMinimumSystemVersion': '10.15',
     'NSHighResolutionCapable': True,
 }

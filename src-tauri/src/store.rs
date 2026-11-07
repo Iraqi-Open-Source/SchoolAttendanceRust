@@ -36,7 +36,7 @@ pub struct Alert { pub id: i64, pub name: String, pub threshold: f64, pub metric
 #[derive(Deserialize)]
 pub struct AlertInput { pub id: Option<i64>, pub name: String, pub threshold: f64, pub metric: String, pub operator: String, pub color: String, pub enabled: bool }
 #[derive(Serialize)]
-pub struct AppConfig { pub school_name: String, pub lessons_per_day: i64, pub year_start: String, pub year_end: String, pub alerts: Vec<Alert> }
+pub struct AppConfig { pub school_name: String, pub lessons_per_day: i64, pub year_start: String, pub year_end: String, pub weekly_off_days: Vec<u8>, pub alerts: Vec<Alert> }
 #[derive(Serialize)]
 pub struct Holiday { pub date: String, pub name: String }
 #[derive(Serialize)]
@@ -62,6 +62,7 @@ fn defaults(conn: &Connection) -> R<()> {
         ("lessons_per_day", "5".to_string()),
         ("year_start", format!("{}-09-01", school_year)),
         ("year_end", format!("{}-08-31", school_year + 1)),
+        ("weekly_off_days", "5,6".to_string()),
     ];
     for (key, value) in data {
         conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?1,?2)", params![key,value]).map_err(msg)?;
@@ -113,6 +114,41 @@ fn migrate(conn: &Connection) -> R<()> {
 fn setting(conn: &Connection, key: &str) -> R<String> {
     conn.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0)).map_err(msg)
 }
+fn js_weekday_from_date(date: &str) -> R<u8> {
+    let d = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| "صيغة التاريخ غير صحيحة (YYYY-MM-DD)".to_string())?;
+    Ok(((d.weekday().num_days_from_monday() as u8).wrapping_add(1)) % 7)
+}
+fn parse_weekly_off_days(raw: &str) -> Vec<u8> {
+    let mut days: Vec<u8> = raw
+        .split(',')
+        .filter_map(|part| part.trim().parse::<u8>().ok())
+        .filter(|day| *day <= 6)
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    days
+}
+fn weekly_off_days(conn: &Connection) -> R<Vec<u8>> {
+    let raw = setting(conn, "weekly_off_days").unwrap_or_else(|_| "5,6".into());
+    Ok(parse_weekly_off_days(&raw))
+}
+fn is_weekly_off(conn: &Connection, date: &str) -> R<bool> {
+    let weekday = js_weekday_from_date(date)?;
+    Ok(weekly_off_days(conn)?.contains(&weekday))
+}
+fn format_weekly_off_days(days: &[u8]) -> String {
+    parse_weekly_off_days(
+        &days
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+    .iter()
+    .map(|d| d.to_string())
+    .collect::<Vec<_>>()
+    .join(",")
+}
 fn config_with(conn: &Connection) -> R<AppConfig> {
     let mut stmt = conn.prepare("SELECT id,name,threshold,metric,operator,color,enabled FROM alert_rules ORDER BY threshold DESC,id").map_err(msg)?;
     let alerts = stmt.query_map([], |r| Ok(Alert {
@@ -120,7 +156,8 @@ fn config_with(conn: &Connection) -> R<AppConfig> {
     })).map_err(msg)?.collect::<Result<Vec<_>,_>>().map_err(msg)?;
     let count = setting(conn, "lessons_per_day")?.parse::<i64>().unwrap_or(5).clamp(1, 20);
     Ok(AppConfig { school_name:setting(conn,"school_name")?, lessons_per_day:count,
-        year_start:setting(conn,"year_start")?, year_end:setting(conn,"year_end")?, alerts })
+        year_start:setting(conn,"year_start")?, year_end:setting(conn,"year_end")?,
+        weekly_off_days:weekly_off_days(conn)?, alerts })
 }
 fn count(conn: &Connection, sql: &str) -> R<i64> {
     conn.query_row(sql,[],|r|r.get(0)).map_err(msg)
@@ -200,6 +237,15 @@ impl AppDb {
     pub fn delete_student(&self,id:i64)->R<()> {
         let conn=self.db()?;conn.execute("DELETE FROM students WHERE id=?1",[id]).map_err(msg)?;Ok(())
     }
+    pub fn move_student(&self,id:i64,section_id:i64)->R<()> {
+        let conn=self.db()?;
+        let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1)",[section_id],|r|r.get(0)).map_err(msg)?;
+        if !exists{return Err("الشعبة غير موجودة".into())}
+        if conn.execute("UPDATE students SET section_id=?1 WHERE id=?2",params![section_id,id]).map_err(msg)?==0{
+            return Err("الطالب غير موجود".into());
+        }
+        Ok(())
+    }
     pub fn import_students(&self,section_id:i64,names:&str,enrollment:&str)->R<u32> {
         valid_enrollment(enrollment)?;
         let names=names.lines().map(str::trim).filter(|v|!v.is_empty()).map(|v|clean(v,"اسم الطالب",150)).collect::<R<Vec<_>>>()?;
@@ -224,6 +270,7 @@ impl AppDb {
         let mut conn=self.db()?;
         let blocked=conn.query_row("SELECT EXISTS(SELECT 1 FROM holidays WHERE date=?1)",[date],|r|r.get::<_,bool>(0)).map_err(msg)?;
         if blocked {return Err("هذا اليوم مسجل عطلة؛ أزل العطلة أولاً إن أردت تسجيل الدوام".into())}
+        if is_weekly_off(&conn, date)? {return Err("هذا اليوم ضمن العطل الأسبوعية؛ لا يمكن تسجيل الدوام".into())}
         let expected_ids:HashSet<i64>={
             let mut stmt=conn.prepare("SELECT id FROM students WHERE section_id=?1 AND enrollment='regular'").map_err(msg)?;
             let result=stmt.query_map([section_id],|r|r.get(0)).map_err(msg)?.collect::<Result<HashSet<i64>,_>>().map_err(msg)?;
@@ -252,13 +299,21 @@ impl AppDb {
         Ok(())
     }
     pub fn config(&self)->R<AppConfig>{let conn=self.db()?;config_with(&conn)}
-    pub fn save_config(&self,school_name:&str,lessons_per_day:u32,year_start:&str,year_end:&str)->R<()> {
+    pub fn save_config(&self,school_name:&str,lessons_per_day:u32,year_start:&str,year_end:&str,weekly_off_days:Vec<u8>)->R<()> {
         let school_name=clean(school_name,"اسم المدرسة",150)?;
         if !(1..=20).contains(&lessons_per_day){return Err("عدد الدروس يجب أن يكون بين 1 و20".into())}
         valid_day(year_start)?;valid_day(year_end)?;
         if year_start > year_end{return Err("نهاية السنة يجب أن تأتي بعد بدايتها".into())}
+        if weekly_off_days.iter().any(|day| *day > 6){return Err("أيام العطل الأسبوعية غير صحيحة".into())}
+        let weekly_off=format_weekly_off_days(&weekly_off_days);
         let mut conn=self.db()?;let tx=conn.transaction().map_err(msg)?;
-        for (key,value) in [("school_name",school_name),("lessons_per_day",lessons_per_day.to_string()),("year_start",year_start.to_owned()),("year_end",year_end.to_owned())] {
+        for (key,value) in [
+            ("school_name",school_name),
+            ("lessons_per_day",lessons_per_day.to_string()),
+            ("year_start",year_start.to_owned()),
+            ("year_end",year_end.to_owned()),
+            ("weekly_off_days",weekly_off),
+        ] {
             tx.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value]).map_err(msg)?;
         }
         tx.commit().map_err(msg)
@@ -470,5 +525,23 @@ mod tests {
         let (db,_,section)=setup();let id=add(&db,section,"regular");
         db.set_holiday("2026-10-01","عطلة مدرسية").unwrap();
         assert!(db.save_sheet(section,"2026-10-01",5,vec![AttendanceRowInput{student_id:id,statuses:vec!["absent".into();5]}]).is_err());
+    }
+    #[test]
+    fn weekly_off_defaults_friday_saturday(){
+        let (db,_,section)=setup();let id=add(&db,section,"regular");
+        let present=||vec![AttendanceRowInput{student_id:id,statuses:vec!["present".into();5]}];
+        assert!(db.save_sheet(section,"2026-10-09",5,present()).is_err());
+        db.save_sheet(section,"2026-10-08",5,present()).unwrap();
+    }
+    #[test]
+    fn move_student_keeps_attendance(){
+        let (db,class_a,section_a)=setup();
+        let section_b=db.create_section(class_a,"ب").unwrap();
+        let id=add(&db,section_a,"regular");
+        db.save_sheet(section_a,"2026-10-05",5,vec![AttendanceRowInput{student_id:id,statuses:vec!["absent".into();5]}]).unwrap();
+        db.move_student(id,section_b).unwrap();
+        let student=db.students(section_b).unwrap().into_iter().find(|s|s.id==id).expect("moved");
+        assert_eq!(student.section_id,section_b);
+        assert_eq!(db.report(Some(section_b)).unwrap()[0].absent_lessons,5);
     }
 }

@@ -9,8 +9,12 @@ const nextStatus = status => status === 'present' ? 'absent' : status === 'absen
 const attendanceMark = status => `<span class="pill ${status==='absent'?'external':'regular'}">${safe(names[status])}</span>`;
 let groups = [], config = null, page = 'home', sheet = [], sheetDirty = false, sheetRequest = 0;
 let students = [], reports = [], holidays = [];
+const studentPick = new Set();
 let studentReport = null;
 let toastTimer = null;
+const ATT_PREFS_KEY = 'attendance.prefs';
+const WEEKDAY_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+const DEFAULT_WEEKLY_OFF = [5, 6];
 
 async function api(command, args={}) {
   if (!window.__TAURI__ || !window.__TAURI__.tauri) throw new Error('شغّل هذا البرنامج من نافذة تطبيق Tauri وليس من المتصفح.');
@@ -57,8 +61,14 @@ async function refreshConfig() {
   $('tip-lessons').textContent=config.lessons_per_day;
   $('att-lessons').value=config.lessons_per_day;
   $('report-period').textContent=`من ${config.year_start} إلى ${config.year_end} • ${config.lessons_per_day} دروس = يوم واحد`;
+  const off=new Set((config.weekly_off_days&&config.weekly_off_days.length)?config.weekly_off_days:DEFAULT_WEEKLY_OFF);
+  document.querySelectorAll('.week-off').forEach(el=>{el.checked=off.has(Number(el.value));});
   renderAlerts();
+  if(page==='attendance')updateAttendanceDateNotice();
 }
+function weeklyOffDays(){return (config&&config.weekly_off_days&&config.weekly_off_days.length)?config.weekly_off_days:DEFAULT_WEEKLY_OFF;}
+function weekdayFromDate(date){return new Date(`${date}T12:00:00`).getDay();}
+function isWeeklyOffDate(date){if(!date)return false;return weeklyOffDays().includes(weekdayFromDate(date));}
 const titles={home:'لوحة المتابعة',attendance:'تسجيل الغيابات',students:'إدارة الطلاب',classes:'الصفوف والشعب',reports:'التقارير والإحصائيات',alerts:'قواعد التنبيه',holidays:'العطل المدرسية',settings:'الإعدادات والنسخ الاحتياطي'};
 async function showPage(next) {
   if(page==='attendance' && next!==page && sheetDirty && !confirm('توجد تعديلات غير محفوظة في دفتر الحضور. هل تريد مغادرة الصفحة؟'))return;
@@ -66,7 +76,7 @@ async function showPage(next) {
   document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.page===next));
   $('page-title').textContent=titles[next];
   if(next==='home') await refreshHome();
-  if(next==='attendance') await loadSheet();
+  if(next==='attendance'){await refreshHolidaysCache();updateAttendanceDateNotice();await loadSheet();}
   if(next==='students') await loadStudents();
   if(next==='classes')renderClasses();
   if(next==='reports')await loadReports();
@@ -90,6 +100,81 @@ async function refreshHome() {
 }
 function alertTags(alerts) { return alerts.map(a=>`<span class="alert-chip" style="color:${a.color};background:${a.color}18;border:1px solid ${a.color}50">${safe(a.name)}</span>`).join(''); }
 
+async function refreshHolidaysCache(){holidays=await api('get_holidays');if(page==='attendance')updateAttendanceDateNotice();}
+function holidayOnDate(date){return holidays.find(h=>h.date===date);}
+function attendanceBlocked(date){return Boolean(holidayOnDate(date))||isWeeklyOffDate(date);}
+function updateAttendanceDateNotice(){
+  const date=$('att-date').value;
+  const notice=$('att-date-notice');
+  const save=$('att-save');
+  const clearBtn=$('att-clear');
+  if(!date||!notice){return;}
+  const holiday=holidayOnDate(date);
+  const weekday=weekdayFromDate(date);
+  const weeklyOff=isWeeklyOffDate(date);
+  const parts=[];
+  if(holiday)parts.push(`عطلة رسمية: ${holiday.name} — لا يمكن حفظ الدوام لهذا اليوم.`);
+  if(weeklyOff)parts.push(`عطلة أسبوعية (${WEEKDAY_AR[weekday]}) — لا يمكن حفظ الدوام لهذا اليوم.`);
+  const blocked=Boolean(holiday||weeklyOff);
+  if(parts.length){
+    notice.textContent=parts.join(' ');
+    notice.className='att-date-notice'+(blocked?' blocked':' warn');
+  }else{
+    notice.textContent='';
+    notice.className='att-date-notice hidden';
+  }
+  if(save)save.disabled=blocked;
+  if(clearBtn)clearBtn.disabled=blocked;
+}
+function saveAttPrefs(){
+  try{
+    localStorage.setItem(ATT_PREFS_KEY,JSON.stringify({
+      classId:$('att-class').value,
+      sectionId:$('att-section').value,
+      date:$('att-date').value
+    }));
+  }catch(_){/* ignore */}
+}
+function restoreAttPrefs(){
+  try{
+    const raw=localStorage.getItem(ATT_PREFS_KEY);
+    if(!raw)return;
+    const prefs=JSON.parse(raw);
+    if(prefs.classId && [...$('att-class').options].some(o=>o.value===prefs.classId)){
+      $('att-class').value=prefs.classId;
+      sectionOptions('att-class','att-section',prefs.sectionId);
+    }
+    if(prefs.date) $('att-date').value=prefs.date;
+  }catch(_){/* ignore */}
+}
+function focusSheetCell(studentId,lesson){
+  const button=$('att-table').querySelector(`.status-button[data-action="cycle"][data-id="${studentId}"][data-lesson="${lesson}"]`);
+  if(button)button.focus();
+}
+function handleSheetKeydown(event){
+  if(page!=='attendance')return;
+  const button=event.target.closest('.status-button[data-action="cycle"]');
+  if(!button)return;
+  const id=Number(button.dataset.id);
+  const lesson=Number(button.dataset.lesson);
+  const regular=sheet.filter(row=>row.student.enrollment==='regular');
+  const rowIndex=regular.findIndex(row=>row.student.id===id);
+  const lessons=currentLessonCount();
+  if(event.key===' '||event.key==='Enter'){
+    event.preventDefault();
+    const row=sheet.find(x=>x.student.id===id);
+    if(row)modifyLesson(id,lesson,nextStatus(row.statuses[lesson]));
+  }else if(event.key==='ArrowLeft'&&lesson>0){
+    event.preventDefault();focusSheetCell(id,lesson-1);
+  }else if(event.key==='ArrowRight'&&lesson<lessons-1){
+    event.preventDefault();focusSheetCell(id,lesson+1);
+  }else if(event.key==='ArrowDown'&&rowIndex>=0&&rowIndex<regular.length-1){
+    event.preventDefault();focusSheetCell(regular[rowIndex+1].student.id,lesson);
+  }else if(event.key==='ArrowUp'&&rowIndex>0){
+    event.preventDefault();focusSheetCell(regular[rowIndex-1].student.id,lesson);
+  }
+}
+
 function currentLessonCount() {const n=Number($('att-lessons').value);return Number.isInteger(n)&&n>=1&&n<=20?n:0;}
 async function loadSheet() {
   if(sheetDirty && !confirm('ستفقد تغييرات الحضور غير المحفوظة. هل تتابع؟'))return;
@@ -100,7 +185,7 @@ async function loadSheet() {
   const rows=await api('get_sheet',{sectionId,date});
   if(request!==sheetRequest)return;
   sheet=rows.map(r=>({...r,statuses:Array.from({length:lessons},(_,i)=>r.statuses[String(i+1)]||'present')}));
-  sheetDirty=false;renderSheet();
+  sheetDirty=false;updateAttendanceDateNotice();renderSheet();
 }
 function markDirty(){sheetDirty=true;$('att-dirty').textContent='● تغييرات لم تُحفظ';}
 function renderSheet() {
@@ -111,7 +196,7 @@ function renderSheet() {
   if(!regular.length){$('att-table').innerHTML=empty('لا يوجد طلاب دوام اعتيادي في هذه الشعبة');$('att-summary').textContent=`طلاب الانتساب المعفيون: ${excluded}`;return;}
   const headers=['الطالب',...Array.from({length:lessons},(_,i)=>`الدرس ${i+1}`),'طوال اليوم'];
   const body=regular.map((r,index)=>`<tr><td><span class="student-cell">${safe(r.student.name)}</span>${r.student.code?`<div class="muted small">${safe(r.student.code)}</div>`:''}</td>`+
-    r.statuses.slice(0,lessons).map((status,lesson)=>`<td class="status-cell"><button class="status-button ${status}" data-action="cycle" data-id="${r.student.id}" data-lesson="${lesson}" title="اضغط لتغيير الحالة">${signs[status]} ${safe(names[status])}</button></td>`).join('')+
+    r.statuses.slice(0,lessons).map((status,lesson)=>`<td class="status-cell"><button type="button" class="status-button ${status}" data-action="cycle" data-id="${r.student.id}" data-lesson="${lesson}" title="اضغط أو Enter/مسافة للتبديل • الأسهم للتنقل">${signs[status]} ${safe(names[status])}</button></td>`).join('')+
     `<td><div class="small-action"><button title="حاضر طوال اليوم" data-action="row-status" data-id="${r.student.id}" data-status="present">✓</button><button title="غائب طوال اليوم" data-action="row-status" data-id="${r.student.id}" data-status="absent">✕</button><button title="مجاز طوال اليوم" data-action="row-status" data-id="${r.student.id}" data-status="excused">◷</button></div></td></tr>`).join('');
   $('att-table').innerHTML=table(headers,body,'sheet-table');
   const totals=regular.flatMap(r=>r.statuses.slice(0,lessons));
@@ -120,6 +205,9 @@ function renderSheet() {
 async function saveSheet() {
   const sectionId=chosen('att-section'),date=$('att-date').value,lessons=currentLessonCount();
   if(!sectionId||!lessons){toast('اختر الشعبة وعدد الدروس',true);return;}
+  if(holidayOnDate(date)){toast('هذا اليوم مسجل عطلة؛ لا يمكن حفظ الدوام',true);return;}
+  if(isWeeklyOffDate(date)){toast('هذا اليوم ضمن العطل الأسبوعية؛ لا يمكن حفظ الدوام',true);return;}
+  saveAttPrefs();
   const rows=sheet.filter(r=>r.student.enrollment==='regular').map(r=>({student_id:r.student.id,statuses:r.statuses.slice(0,lessons)}));
   if(!rows.length){toast('لا يوجد طلاب اعتياديون',true);return;}
   await api('save_sheet',{sectionId,date,lessons,rows});sheetDirty=false;renderSheet();toast('تم حفظ دفتر الحضور بنجاح');
@@ -143,19 +231,85 @@ function renderClasses() {
   const classId=chosen('section-parent');const c=groups.find(g=>g.id===classId);
   $('sections-list').innerHTML=c&&c.sections.length?c.sections.map(s=>`<div class="record"><div><strong>الشعبة ${safe(s.name)}</strong></div><div class="buttons"><button data-action="rename-section" data-id="${s.id}">تعديل</button><button class="delete" data-action="delete-section" data-id="${s.id}">حذف</button></div></div>`).join(''):empty('اختر صفاً ثم أضف شعبه');
 }
+function filteredStudentList(){
+  const query=$('students-search').value.trim();
+  return students.filter(s=>!query||`${s.name} ${s.code}`.includes(query));
+}
+function updateStudentTransferUi(){
+  const bulk=$('students-bulk-transfer');
+  if(bulk)bulk.disabled=studentPick.size===0;
+  const pickAll=$('students-pick-all');
+  if(!pickAll)return;
+  const visible=filteredStudentList();
+  const picked=visible.filter(s=>studentPick.has(s.id)).length;
+  pickAll.checked=visible.length>0&&picked===visible.length;
+  pickAll.indeterminate=picked>0&&picked<visible.length;
+}
 async function loadStudents(){
-  const id=chosen('students-section');students=id?await api('get_students',{sectionId:id}):[];renderStudents();
+  const id=chosen('students-section');
+  students=id?await api('get_students',{sectionId:id}):[];
+  for(const sid of [...studentPick]) if(!students.some(s=>s.id===sid))studentPick.delete(sid);
+  renderStudents();
 }
 function renderStudents() {
-  const query=$('students-search').value.trim();const filtered=students.filter(s=>!query||`${s.name} ${s.code}`.includes(query));
-  $('students-table').innerHTML=filtered.length?table(['#','اسم الطالب','الرمز','نوع الدوام','الملاحظات','الإجراءات'],filtered.map((s,i)=>`<tr><td>${i+1}</td><td class="student-cell">${safe(s.name)}</td><td>${safe(s.code||'—')}</td><td><span class="pill ${s.enrollment==='external'?'external':'regular'}">${s.enrollment==='external'?'انتساب • معفي':'اعتيادي'}</span></td><td>${safe(s.notes||'—')}</td><td class="no-wrap"><button class="btn mini outline" data-action="edit-student" data-id="${s.id}">تعديل</button> <button class="btn mini danger-outline" data-action="delete-student" data-id="${s.id}">حذف</button></td></tr>`).join('')):empty('لا توجد أسماء مطابقة في هذه الشعبة');
+  const filtered=filteredStudentList();
+  $('students-table').innerHTML=filtered.length?table(['','#','اسم الطالب','الرمز','نوع الدوام','الملاحظات','الإجراءات'],filtered.map((s,i)=>`<tr><td class="student-pick-cell"><input type="checkbox" class="student-pick" data-id="${s.id}" aria-label="تحديد ${safe(s.name)}"${studentPick.has(s.id)?' checked':''} /></td><td>${i+1}</td><td class="student-cell">${safe(s.name)}</td><td>${safe(s.code||'—')}</td><td><span class="pill ${s.enrollment==='external'?'external':'regular'}">${s.enrollment==='external'?'انتساب • معفي':'اعتيادي'}</span></td><td>${safe(s.notes||'—')}</td><td class="no-wrap"><button type="button" class="btn mini outline" data-action="edit-student" data-id="${s.id}">تعديل</button> <button type="button" class="btn mini subtle" data-action="move-student" data-id="${s.id}">ترحيل</button> <button type="button" class="btn mini danger-outline" data-action="delete-student" data-id="${s.id}">حذف</button></td></tr>`).join('')):empty('لا توجد أسماء مطابقة في هذه الشعبة');
+  updateStudentTransferUi();
 }
 function resetStudent(){
   $('student-form').reset();$('student-id').value='';$('student-submit').textContent='إضافة الطالب';$('student-cancel').classList.add('hidden');
 }
 async function submitStudent(event){event.preventDefault();const sectionId=chosen('students-section');if(!sectionId)throw new Error('أضف شعبة أولاً');
-  const student={id:chosen('student-id')||null,section_id:sectionId,name:$('student-name').value,code:$('student-code').value,enrollment:$('student-enrollment').value,notes:$('student-notes').value};
+  const studentId=chosen('student-id')||null;
+  const previous=studentId?students.find(s=>s.id===studentId):null;
+  const enrollment=$('student-enrollment').value;
+  if(previous&&previous.enrollment==='regular'&&enrollment==='external'&&!confirm('سيُعفى الطالب من الدوام والتنبيهات لكن سجلّه السابق يبقى. هل تتابع؟'))return;
+  const student={id:studentId,section_id:sectionId,name:$('student-name').value,code:$('student-code').value,enrollment,notes:$('student-notes').value};
   await api('upsert_student',{student});resetStudent();await loadStudents();toast('تم حفظ بيانات الطالب');
+}
+async function exportStudentsCsv(){
+  const sectionId=chosen('students-section');
+  if(!sectionId)throw new Error('اختر الشعبة أولاً');
+  const group=selectedGroup(chosen('students-class'),sectionId);
+  const label=`${group.name}-${group.section}`.replace(/[\\/:*?"<>|]/g,' ').trim()||'طلاب';
+  const path=await window.__TAURI__.dialog.save({defaultPath:`قائمة-${label}.csv`,filters:[{name:'Excel CSV',extensions:['csv']}]});
+  if(!path)return;
+  let csv=csvLine(['الاسم','الرمز','نوع الدوام','ملاحظات']);
+  for(const s of students) csv+=csvLine([s.name,s.code||'',s.enrollment==='external'?'انتساب':'اعتيادي',s.notes||'']);
+  await api('save_export',{path,content:csv});
+  toast('تم تصدير قائمة الطلاب');
+}
+function sectionLabel(sectionId){
+  for(const group of groups){
+    const section=group.sections.find(x=>x.id===sectionId);
+    if(section)return `${group.name} / ${section.name}`;
+  }
+  return '';
+}
+function transferSectionOptions(excludeSectionId){
+  return groups.flatMap(group=>group.sections
+    .filter(section=>section.id!==excludeSectionId)
+    .map(section=>`<option value="${section.id}">${safe(group.name)} / ${safe(section.name)}</option>`)).join('');
+}
+function openMoveStudent(id){
+  const student=students.find(s=>s.id===id);
+  if(!student)return;
+  const options=transferSectionOptions(student.section_id);
+  if(!options){toast('لا توجد شعبة أخرى للترحيل',true);return;}
+  modal('ترحيل الطالب',`<p class="muted">ترحيل <b>${safe(student.name)}</b> مع الإبقاء على سجل الغياب.</p><label>الشعبة الجديدة<select id="move-target">${options}</select></label><div class="action-row" style="margin-top:14px"><button type="button" class="btn primary" data-action="confirm-move" data-id="${id}">تأكيد الترحيل</button></div>`);
+}
+function openBulkMoveStudents(){
+  const sectionId=chosen('students-section');
+  if(!sectionId){toast('اختر الشعبة أولاً',true);return;}
+  const ids=[...studentPick];
+  if(!ids.length){toast('حدد طالباً واحداً على الأقل',true);return;}
+  const options=transferSectionOptions(sectionId);
+  if(!options){toast('لا توجد شعبة أخرى للترحيل',true);return;}
+  modal('ترحيل جماعي',`<p class="muted">ترحيل <b>${ids.length}</b> طالب مع الإبقاء على سجل الغياب.</p><label>الشعبة الجديدة<select id="move-target">${options}</select></label><div class="action-row" style="margin-top:14px"><button type="button" class="btn primary" data-action="confirm-bulk-move">تأكيد الترحيل</button></div>`);
+}
+async function executeBulkTransfer(targetSectionId,ids){
+  for(const sid of ids) await api('move_student',{id:sid,sectionId:targetSectionId});
+  ids.forEach(id=>studentPick.delete(id));
 }
 async function importStudents(){
   const sectionId=chosen('students-section');if(!sectionId)throw new Error('اختر الشعبة أولاً');
@@ -164,8 +318,29 @@ async function importStudents(){
 }
 
 async function loadReports(){reports=await api('get_report',{sectionId:chosen('report-section')||null});renderReports();}
+function filteredReports(){
+  const q=$('report-search').value.trim();
+  let rows=reports.filter(x=>!q||x.student_name.includes(q));
+  if($('report-alert-only').checked) rows=rows.filter(s=>s.alerts.length);
+  const sort=$('report-sort').value;
+  rows=[...rows].sort((a,b)=>{
+    if(sort==='name')return a.student_name.localeCompare(b.student_name,'ar');
+    if(sort==='lessons-desc')return b.absent_lessons-a.absent_lessons||a.student_name.localeCompare(b.student_name,'ar');
+    return b.absent_days-a.absent_days||a.student_name.localeCompare(b.student_name,'ar');
+  });
+  return rows;
+}
+function printSectionSummary(){
+  const rows=filteredReports();
+  const sectionId=chosen('report-section');
+  const scope=sectionId?sectionLabel(sectionId):'جميع الشعب';
+  const period=config?`${config.year_start} — ${config.year_end}`:'';
+  const bodyRows=rows.length?rows.map(r=>`<tr><td>${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td>${r.enrollment==='external'?'انتساب':safe(r.absence_text)}</td><td>${r.enrollment==='external'?'—':r.absent_days.toFixed(2)}</td><td>${alertTags(r.alerts)||'—'}</td></tr>`).join(''):'<tr><td colspan="5">لا توجد نتائج</td></tr>';
+  const html=`<h1>ملخص غياب الشعبة</h1><p class="note">${safe(config?config.school_name:'')} • ${safe(scope)} • ${safe(period)}</p><table><thead><tr><th>الطالب</th><th>الصف / الشعبة</th><th>الغياب</th><th>أيام مكافئة</th><th>التنبيهات</th></tr></thead><tbody>${bodyRows}</tbody></table><p class="note">${rows.length} طالب • ${rows.filter(s=>s.alerts.length).length} لديهم تنبيهات</p>`;
+  return printDocument('ملخص غياب الشعبة',html);
+}
 function renderReports(){
-  const q=$('report-search').value.trim();const rs=reports.filter(x=>!q||x.student_name.includes(q));
+  const rs=filteredReports();
   const regular=rs.filter(s=>s.enrollment==='regular');
   const full=regular.reduce((n,s)=>n+(s.full_absent_days||0),0);
   const partial=regular.reduce((n,s)=>n+(s.partial_absent_lessons||0),0);
@@ -327,9 +502,12 @@ async function loadHolidays(){holidays=await api('get_holidays');renderHolidays(
 function renderHolidays(){
   $('holidays-list').innerHTML=holidays.length?holidays.map(x=>`<div class="record"><div><strong>${safe(x.name)}</strong><small>${safe(x.date)}</small></div><button class="btn mini danger-outline" data-action="delete-holiday" data-date="${safe(x.date)}">إزالة</button></div>`).join(''):empty('لا توجد عطل مسجلة');
 }
-async function saveHoliday(e){e.preventDefault();await api('set_holiday',{date:$('holiday-date').value,name:$('holiday-name').value});$('holiday-name').value='';await loadHolidays();toast('تم تسجيل العطلة');}
-async function saveSettings(e){e.preventDefault();await api('save_config',{schoolName:$('school-name').value,lessonsPerDay:Number($('settings-lessons').value),yearStart:$('year-start').value,yearEnd:$('year-end').value});
-  await refreshConfig();toast('تم حفظ الإعدادات. أعد فتح دفتر الحضور لتطبيق عدد الدروس الجديد.');}
+async function saveHoliday(e){e.preventDefault();await api('set_holiday',{date:$('holiday-date').value,name:$('holiday-name').value});$('holiday-name').value='';await loadHolidays();await refreshHolidaysCache();toast('تم تسجيل العطلة');}
+function selectedWeeklyOffDays(){
+  return [...document.querySelectorAll('.week-off:checked')].map(el=>Number(el.value));
+}
+async function saveSettings(e){e.preventDefault();await api('save_config',{schoolName:$('school-name').value,lessonsPerDay:Number($('settings-lessons').value),yearStart:$('year-start').value,yearEnd:$('year-end').value,weeklyOffDays:selectedWeeklyOffDays()});
+  await refreshConfig();toast('تم حفظ الإعدادات. أعد فتح دفتر الحضور لتطبيق التغييرات.');}
 function modal(title,html){$('modal-title').textContent=title;$('modal-content').innerHTML=html;$('modal-cover').classList.remove('hidden');}
 function closeModal(){$('modal-cover').classList.add('hidden');}
 async function exportCsv(){
@@ -369,6 +547,20 @@ async function dispatchAction(el){
     if(!confirm('سيتم حذف الطالب وسجلات حضوره وغيابه نهائياً. هل تؤكد؟'))return;
     await api('delete_student',{id});await loadStudents();toast('تم حذف الطالب');return;
   }
+  if(action==='move-student'){openMoveStudent(id);return;}
+  if(action==='confirm-move'){
+    const target=Number($('move-target').value);
+    if(!target){toast('اختر الشعبة',true);return;}
+    await api('move_student',{id,sectionId:target});studentPick.delete(id);closeModal();await loadStudents();toast('تم ترحيل الطالب');
+    return;
+  }
+  if(action==='confirm-bulk-move'){
+    const target=Number($('move-target').value);
+    const ids=[...studentPick];
+    if(!target||!ids.length){toast('اختر الشعبة والطلاب',true);return;}
+    await executeBulkTransfer(target,ids);closeModal();await loadStudents();toast(`تم ترحيل ${ids.length} طالب`);
+    return;
+  }
   if(action==='history'){await showHistory(id);return;}
   if(action==='print-summary'){await printStudentReport('summary');return;}
   if(action==='print-detail'){await printStudentReport('detail');return;}
@@ -380,7 +572,7 @@ async function dispatchAction(el){
     $('alert-submit').textContent='حفظ التعديل';$('alert-cancel').classList.remove('hidden');$('alert-name').focus();return;
   }
   if(action==='delete-alert'){if(!confirm('هل تريد حذف قاعدة التنبيه؟'))return;await api('delete_alert',{id});config=await api('get_config');renderAlerts();toast('تم حذف القاعدة');return;}
-  if(action==='delete-holiday'){if(!confirm('إزالة هذا التاريخ من العطل؟'))return;await api('delete_holiday',{date});await loadHolidays();toast('تمت إزالة العطلة');}
+  if(action==='delete-holiday'){if(!confirm('إزالة هذا التاريخ من العطل؟'))return;await api('delete_holiday',{date});await loadHolidays();await refreshHolidaysCache();toast('تمت إزالة العطلة');}
 }
 function on(id,event,fn){$(id).addEventListener(event,e=>run(()=>fn(e)));}
 function attach() {
@@ -388,8 +580,10 @@ function attach() {
     const go=e.target.closest('[data-page],[data-goto]');if(go){run(()=>showPage(go.dataset.page||go.dataset.goto));return;}
     const action=e.target.closest('[data-action]');if(action)run(()=>dispatchAction(action));
   });
-  on('att-class','change',async()=>{sectionOptions('att-class','att-section');await loadSheet();});
-  on('att-section','change',loadSheet);on('att-date','change',loadSheet);on('att-lessons','change',lessonCountChanged);
+  on('att-class','change',async()=>{sectionOptions('att-class','att-section');saveAttPrefs();updateAttendanceDateNotice();await loadSheet();});
+  on('att-section','change',async()=>{saveAttPrefs();await loadSheet();});
+  on('att-date','change',async()=>{saveAttPrefs();updateAttendanceDateNotice();await loadSheet();});
+  on('att-lessons','change',lessonCountChanged);
   on('att-load','click',loadSheet);on('att-save','click',saveSheet);
   on('att-clear','click',async()=>{
     const sectionId=chosen('att-section'),date=$('att-date').value;
@@ -398,20 +592,47 @@ function attach() {
     await api('clear_sheet',{sectionId,date});sheetDirty=false;await loadSheet();toast('تم حذف سجل اليوم');
   });
   on('att-all-present','click',()=>allStatuses('present'));on('att-all-absent','click',()=>allStatuses('absent'));on('att-all-excused','click',()=>allStatuses('excused'));
-  on('students-class','change',async()=>{sectionOptions('students-class','students-section');resetStudent();await loadStudents();});
-  on('students-section','change',async()=>{resetStudent();await loadStudents();});
-  on('students-search','input',renderStudents);on('student-form','submit',submitStudent);on('student-cancel','click',resetStudent);
+  on('students-class','change',async()=>{studentPick.clear();sectionOptions('students-class','students-section');resetStudent();await loadStudents();});
+  on('students-section','change',async()=>{studentPick.clear();resetStudent();await loadStudents();});
+  on('students-search','input',renderStudents);
+  on('students-bulk-transfer','click',()=>openBulkMoveStudents());
+  on('student-form','submit',submitStudent);on('student-cancel','click',resetStudent);
+  document.addEventListener('change',e=>{
+    if(e.target.id==='students-pick-all'){
+      const visible=filteredStudentList();
+      if(e.target.checked)visible.forEach(s=>studentPick.add(s.id));
+      else visible.forEach(s=>studentPick.delete(s.id));
+      renderStudents();
+      return;
+    }
+    if(e.target.classList.contains('student-pick')){
+      const sid=Number(e.target.dataset.id);
+      if(e.target.checked)studentPick.add(sid);else studentPick.delete(sid);
+      updateStudentTransferUi();
+    }
+  });
   on('import-toggle','click',()=>$('import-area').classList.toggle('hidden'));on('import-confirm','click',importStudents);
   on('class-form','submit',async e=>{e.preventDefault();await api('create_class',{name:$('class-name').value});$('class-name').value='';await refreshGroups();toast('تمت إضافة الصف');});
   on('section-form','submit',async e=>{e.preventDefault();await api('create_section',{classId:chosen('section-parent'),name:$('section-name').value});$('section-name').value='';await refreshGroups();toast('تمت إضافة الشعبة');});
   on('section-parent','change',renderClasses);
-  on('report-section','change',loadReports);on('report-search','input',renderReports);on('report-export','click',exportCsv);
+  on('report-section','change',loadReports);on('report-search','input',renderReports);on('report-alert-only','change',renderReports);on('report-sort','change',renderReports);
+  on('report-export','click',exportCsv);on('report-print-section','click',()=>run(()=>printSectionSummary()));
+  on('students-export','click',exportStudentsCsv);
+  $('att-table').addEventListener('keydown',handleSheetKeydown);
   on('alert-form','submit',submitAlert);on('alert-cancel','click',resetAlert);
   on('holiday-form','submit',saveHoliday);on('settings-form','submit',saveSettings);
   on('backup-save','click',backupSave);on('backup-restore','click',backupRestore);
   on('modal-close','click',closeModal);on('modal-ok','click',closeModal);
   on('modal-cover','click',e=>{if(e.target.id==='modal-cover')closeModal();});
-  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape')closeModal();
+    if((e.ctrlKey||e.metaKey)&&e.key==='s'){
+      if(page==='attendance'){
+        e.preventDefault();
+        if(sheetDirty&&!attendanceBlocked($('att-date').value)) run(()=>saveSheet());
+      }
+    }
+  });
   window.addEventListener('beforeunload',e=>{if(sheetDirty){e.preventDefault();e.returnValue='';}});
 }
 async function initialize() {
@@ -419,6 +640,13 @@ async function initialize() {
   $('att-date').value=localDate();$('holiday-date').value=localDate();
   attach();
   if(!window.__TAURI__){modal('تنبيه التشغيل',`<p>هذه واجهة برنامج سطح المكتب. لتشغيلها بقاعدة بيانات SQLite، افتحها عبر <b>cargo tauri dev</b> بعد تجهيز Rust وTauri.</p><p class="muted">يمكن عرض التصميم في المتصفح، لكن حفظ البيانات متاح داخل تطبيق سطح المكتب فقط.</p>`);return;}
-  try{await refreshGroups();await refreshConfig();await refreshHome();}catch(e){toast('تعذر بدء البرنامج: '+String(e),true);}
+  try{
+    await refreshGroups();
+    restoreAttPrefs();
+    await refreshConfig();
+    await refreshHolidaysCache();
+    updateAttendanceDateNotice();
+    await refreshHome();
+  }catch(e){toast('تعذر بدء البرنامج: '+String(e),true);}
 }
 initialize();

@@ -37,6 +37,9 @@ fn upsert_student(db: State<'_, AppDb>, student: StudentInput) -> ApiResult<i64>
 fn delete_student(db: State<'_, AppDb>, id: i64) -> ApiResult<()> { db.delete_student(id) }
 
 #[tauri::command]
+fn move_student(db: State<'_, AppDb>, id: i64, section_id: i64) -> ApiResult<()> { db.move_student(id, section_id) }
+
+#[tauri::command]
 fn import_students(db: State<'_, AppDb>, section_id: i64, names: String, enrollment: String) -> ApiResult<u32> { db.import_students(section_id, &names, &enrollment) }
 
 #[tauri::command]
@@ -54,8 +57,8 @@ fn clear_sheet(db: State<'_, AppDb>, section_id: i64, date: String) -> ApiResult
 fn get_config(db: State<'_, AppDb>) -> ApiResult<store::AppConfig> { db.config() }
 
 #[tauri::command]
-fn save_config(db: State<'_, AppDb>, school_name: String, lessons_per_day: u32, year_start: String, year_end: String) -> ApiResult<()> {
-    db.save_config(&school_name, lessons_per_day, &year_start, &year_end)
+fn save_config(db: State<'_, AppDb>, school_name: String, lessons_per_day: u32, year_start: String, year_end: String, weekly_off_days: Vec<u8>) -> ApiResult<()> {
+    db.save_config(&school_name, lessons_per_day, &year_start, &year_end, weekly_off_days)
 }
 
 #[tauri::command]
@@ -231,7 +234,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_groups, create_class, rename_class, delete_class,
             create_section, rename_section, delete_section,
-            get_students, upsert_student, delete_student, import_students,
+            get_students, upsert_student, delete_student, move_student, import_students,
             get_sheet, save_sheet, clear_sheet, get_config, save_config,
             save_alert, delete_alert, get_holidays, set_holiday, delete_holiday,
             get_report, get_history, get_dashboard, export_report, save_export, backup_db, restore_db, print_page

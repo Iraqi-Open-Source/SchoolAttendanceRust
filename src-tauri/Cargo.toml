@@ -1,6 +1,6 @@
 [package]
 name = "school_attendance"
-version = "1.0.0"
+version = "1.1.0"
 description = "Offline Arabic school attendance desktop app"
 authors = ["School Attendance Project"]
 edition = "2021"
