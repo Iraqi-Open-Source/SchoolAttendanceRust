@@ -166,9 +166,31 @@ async function importStudents(){
 async function loadReports(){reports=await api('get_report',{sectionId:chosen('report-section')||null});renderReports();}
 function renderReports(){
   const q=$('report-search').value.trim();const rs=reports.filter(x=>!q||x.student_name.includes(q));
-  $('reports-table').innerHTML=rs.length?table(['الطالب','الصف / الشعبة','الدوام','غياب درس','أيام مكافئة','دروس إجازة','التنبيهات','تفاصيل'],rs.map(r=>
-    `<tr><td class="report-name">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="pill ${r.enrollment==='external'?'external':'regular'}">${r.enrollment==='external'?'انتساب':'اعتيادي'}</span></td><td class="number">${r.enrollment==='external'?'—':r.absent_lessons}</td><td class="number">${r.enrollment==='external'?'معفي':r.absent_days.toFixed(2)}</td><td class="number">${r.excused_lessons}</td><td>${alertTags(r.alerts)}</td><td><button class="btn mini outline" data-action="history" data-id="${r.student_id}">عرض</button></td></tr>`).join('')):empty('لا توجد نتائج');
-  $('report-summary').textContent=`${rs.length} طالب • ${rs.filter(s=>s.enrollment==='regular').reduce((n,s)=>n+s.absent_lessons,0)} درس غياب • ${rs.filter(s=>s.alerts.length).length} طالب لديه تنبيهات`;
+  const regular=rs.filter(s=>s.enrollment==='regular');
+  const full=regular.reduce((n,s)=>n+(s.full_absent_days||0),0);
+  const partial=regular.reduce((n,s)=>n+(s.partial_absent_lessons||0),0);
+  $('reports-table').innerHTML=rs.length?table(['الطالب','الصف / الشعبة','الدوام','الغياب','دروس إجازة','التنبيهات','تفاصيل'],rs.map(r=>
+    `<tr><td class="report-name">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="pill ${r.enrollment==='external'?'external':'regular'}">${r.enrollment==='external'?'انتساب':'اعتيادي'}</span></td><td>${r.enrollment==='external'?'<span class="pill external">معفي</span>':`<span class="absence-phrase">${safe(r.absence_text)}</span><small class="absence-sub">${r.absent_days.toFixed(2)} يوم مكافئ • ${r.absent_lessons} درس</small>`}</td><td class="number">${r.excused_lessons}</td><td>${alertTags(r.alerts)}</td><td><button class="btn mini outline" data-action="history" data-id="${r.student_id}">عرض</button></td></tr>`).join('')):empty('لا توجد نتائج');
+  $('report-summary').textContent=`${rs.length} طالب • ${absencePhrase(full,partial)} • ${rs.filter(s=>s.alerts.length).length} طالب لديه تنبيهات`;
+}
+function countPhrase(n,kind){
+  const forms=kind==='day'?['يوم واحد','يومان','أيام','يوم']:['درس واحد','درسان','دروس','درس'];
+  if(n===1)return forms[0];
+  if(n===2)return forms[1];
+  if(n>=3&&n<=10)return `${n} ${forms[2]}`;
+  return `${n} ${forms[3]}`;
+}
+function absencePhrase(days,lessons){
+  if(!days&&!lessons)return 'لا غياب';
+  const parts=[];
+  if(days)parts.push(countPhrase(days,'day'));
+  if(lessons)parts.push(countPhrase(lessons,'lesson'));
+  return `غائب ${parts.join(' و')}`;
+}
+function lessonList(nums){
+  if(nums.length===1)return `الدرس ${nums[0]}`;
+  if(nums.length===2)return `الدرسين ${nums[0]} و${nums[1]}`;
+  return `الدروس ${nums.join(' و')}`;
 }
 function groupAbsences(hist){
   const days=[]; let current=null;
@@ -178,25 +200,41 @@ function groupAbsences(hist){
   }
   const lines=[];
   for(const day of days){
-    if(day.rows.length&&day.rows.every(x=>x.status==='absent')) lines.push({date:day.date,lesson:'اليوم كامل',status:'absent',day:true});
-    else for(const row of day.rows){ if(row.status!=='present') lines.push({date:row.date,lesson:String(row.lesson),status:row.status,day:false}); }
+    const absent=day.rows.filter(x=>x.status==='absent').map(x=>x.lesson);
+    const excused=day.rows.filter(x=>x.status==='excused').map(x=>x.lesson);
+    const present=day.rows.filter(x=>x.status==='present').length;
+    if(!absent.length&&!excused.length)continue;
+    let text,status,full=false;
+    if(absent.length===day.rows.length){
+      full=true; status='absent';
+      text=`غائب اليوم كامل (${countPhrase(day.rows.length,'lesson')})`;
+    }else if(excused.length===day.rows.length){
+      status='excused';
+      text=`مجاز اليوم كامل (${countPhrase(day.rows.length,'lesson')})`;
+    }else{
+      status=absent.length?'partial':'excused';
+      const bits=[];
+      if(present)bits.push(`حاضر ${countPhrase(present,'lesson')}`);
+      if(absent.length)bits.push(`غائب ${lessonList(absent)}`);
+      if(excused.length)bits.push(`مجاز ${lessonList(excused)}`);
+      text=bits.join('، و');
+    }
+    lines.push({date:day.date,text,status,day:full,absentLessons:absent.length});
   }
   return lines;
 }
-function absenceSummary(r, lines){
-  if(r.enrollment==='external') return 'انتساب (معفي من احتساب الغياب)';
-  const full=lines.filter(x=>x.day).length;
-  const partial=lines.filter(x=>!x.day&&x.status==='absent').length;
-  return `${r.absent_lessons} درس غياب = ${r.absent_days.toFixed(2)} يوم مكافئ • ${full} يوم غياب كامل • ${partial} درس غياب متفرق`;
+function absenceSummary(r){
+  if(r.enrollment==='external')return 'انتساب (معفي من احتساب الغياب)';
+  return `${r.absence_text} • يعادل ${r.absent_days.toFixed(2)} يوم • ${r.absent_lessons} درس غياب`;
 }
 function absenceTable(lines){
-  return lines.length?table(['التاريخ','الدرس','الحالة'],lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.lesson)}</td><td>${attendanceMark(x.status)}</td></tr>`).join('')):empty('لا توجد غيابات أو إجازات في السنة الحالية');
+  return lines.length?table(['التاريخ','توضيح اليوم'],lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.text)}</td></tr>`).join('')):empty('لا توجد غيابات أو إجازات في السنة الحالية');
 }
 async function showHistory(id){
   const r=reports.find(x=>x.student_id===id);if(!r)return;
   const lines=groupAbsences(await api('get_history',{studentId:id}));
   studentReport={report:r,lines};
-  const content=`<p class="muted">${safe(r.class_name)} / ${safe(r.section_name)} • ${safe(absenceSummary(r,lines))}</p>`+
+  const content=`<p class="muted">${safe(r.class_name)} / ${safe(r.section_name)} • ${safe(absenceSummary(r))}</p>`+
     `<div class="action-row report-actions"><button class="btn mini secondary" data-action="print-summary" data-id="${r.student_id}">طباعة تقرير إجمالي</button><button class="btn mini secondary" data-action="print-detail" data-id="${r.student_id}">طباعة تقرير مفصل</button><button class="btn mini primary" data-action="export-student" data-id="${r.student_id}">تصدير Excel</button></div>`+
     absenceTable(lines);
   modal(`سجل الطالب: ${r.student_name}`,content);
@@ -209,10 +247,11 @@ function reportFacts(r, lines){
     ['الصف / الشعبة', `${r.class_name} / ${r.section_name}`],
     ['نوع الدوام', r.enrollment==='external'?'انتساب':'اعتيادي'],
     ['الفترة', config?`${config.year_start} إلى ${config.year_end}`:''],
-    ['دروس الغياب', r.enrollment==='external'?'معفي':String(r.absent_lessons)],
+    ['الغياب', r.enrollment==='external'?'معفي':r.absence_text],
     ['أيام الغياب المكافئة', r.enrollment==='external'?'معفي':r.absent_days.toFixed(2)],
+    ['دروس الغياب', r.enrollment==='external'?'معفي':String(r.absent_lessons)],
     ['أيام الغياب الكاملة', String(lines.filter(x=>x.day).length)],
-    ['دروس الغياب المتفرقة', String(lines.filter(x=>!x.day&&x.status==='absent').length)],
+    ['دروس الغياب في أيام غير مكتملة', String(lines.reduce((n,x)=>n+(x.day?0:x.absentLessons),0))],
     ['دروس الإجازة', String(r.excused_lessons)],
     ['دروس الحضور', String(r.present_lessons)],
     ['التنبيهات', alerts]
@@ -223,8 +262,8 @@ function printStudentReport(kind){
   const {report:r,lines}=studentReport;
   const detailed=kind==='detail';
   const facts=reportFacts(r,lines).map(([k,v])=>`<tr><th>${safe(k)}</th><td>${safe(v)}</td></tr>`).join('');
-  const detail=detailed?`<h2>تفاصيل الغياب</h2><table><thead><tr><th>التاريخ</th><th>الدرس</th><th>الحالة</th></tr></thead><tbody>${lines.length?lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.lesson)}</td><td>${safe(names[x.status]||x.status)}</td></tr>`).join(''):'<tr><td colspan="3">لا توجد غيابات أو إجازات</td></tr>'}</tbody></table>`:'';
-  printDocument(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي', `<h1>${detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي'}</h1><table class="facts">${facts}</table>${detail}<p class="note">اليوم الذي غاب فيه الطالب عن كل الدروس يظهر مرة واحدة. الغياب في بعض الدروس يظهر لكل درس.</p>`);
+  const detail=detailed?`<h2>تفاصيل الغياب</h2><table><thead><tr><th>التاريخ</th><th>توضيح اليوم</th></tr></thead><tbody>${lines.length?lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.text)}</td></tr>`).join(''):'<tr><td colspan="2">لا توجد غيابات أو إجازات</td></tr>'}</tbody></table>`:'';
+  printDocument(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي', `<h1>${safe(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي')} — ${safe(r.student_name)}</h1><table class="facts">${facts}</table>${detail}<p class="note">إذا غاب الطالب في كل دروس اليوم يُكتب «غائب اليوم كامل». وإذا غاب في درس محدد يُذكر رقم الدرس وعدد الدروس التي حضرها في اليوم نفسه.</p>`);
 }
 function csvCell(value){
   const text=String(value??'');
@@ -239,25 +278,20 @@ async function exportStudentExcel(){
   if(!path)return;
   let csv=csvLine(['البيان','القيمة']);
   for(const [k,v] of reportFacts(r,lines)) csv+=csvLine([k,v]);
-  csv+='\r\n'+csvLine(['التاريخ','الدرس','الحالة']);
-  if(!lines.length) csv+=csvLine(['','','لا توجد غيابات أو إجازات']);
-  for(const line of lines) csv+=csvLine([line.date,line.lesson,names[line.status]||line.status]);
+  csv+='\r\n'+csvLine(['التاريخ','توضيح اليوم']);
+  if(!lines.length) csv+=csvLine(['','لا توجد غيابات أو إجازات']);
+  for(const line of lines) csv+=csvLine([line.date,line.text]);
   await api('save_export',{path,content:csv});
   toast('تم تصدير تقرير الطالب إلى ملف يفتح في إكسل');
 }
 function printDocument(title, body){
-  const frame=document.createElement('iframe');
-  frame.setAttribute('aria-hidden','true');
-  frame.style.cssText='position:fixed;width:0;height:0;border:0';
-  document.body.appendChild(frame);
-  const doc=frame.contentWindow.document;
-  doc.open();
-  doc.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${safe(title)}</title><style>body{font-family:Tahoma,"Segoe UI",Arial,sans-serif;color:#172b36;margin:24px}h1{font-size:22px;margin:0 0 16px}h2{font-size:16px;margin:22px 0 8px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #c5d0d6;padding:8px;text-align:right}th{background:#f3f6f8}.facts th{width:220px;background:#f7fafb}.note{color:#5d7380;font-size:12px;margin-top:18px}</style></head><body>${body}</body></html>`);
-  doc.close();
-  const win=frame.contentWindow;
-  const cleanup=()=>setTimeout(()=>frame.remove(),400);
-  win.onafterprint=cleanup;
-  setTimeout(()=>{win.focus();win.print();},250);
+  const root=$('print-root');
+  const previous=document.title;
+  root.innerHTML=body;
+  document.title=title;
+  const cleanup=()=>{document.title=previous;root.innerHTML='';window.removeEventListener('afterprint',cleanup);};
+  window.addEventListener('afterprint',cleanup);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>window.print()));
 }
 
 function renderAlerts() {
