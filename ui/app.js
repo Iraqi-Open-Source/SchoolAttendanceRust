@@ -258,12 +258,12 @@ function reportFacts(r, lines){
   ];
 }
 function printStudentReport(kind){
-  if(!studentReport)return;
+  if(!studentReport)return Promise.resolve();
   const {report:r,lines}=studentReport;
   const detailed=kind==='detail';
   const facts=reportFacts(r,lines).map(([k,v])=>`<tr><th>${safe(k)}</th><td>${safe(v)}</td></tr>`).join('');
   const detail=detailed?`<h2>تفاصيل الغياب</h2><table><thead><tr><th>التاريخ</th><th>توضيح اليوم</th></tr></thead><tbody>${lines.length?lines.map(x=>`<tr><td>${safe(x.date)}</td><td>${safe(x.text)}</td></tr>`).join(''):'<tr><td colspan="2">لا توجد غيابات أو إجازات</td></tr>'}</tbody></table>`:'';
-  printDocument(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي', `<h1>${safe(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي')} — ${safe(r.student_name)}</h1><table class="facts">${facts}</table>${detail}<p class="note">إذا غاب الطالب في كل دروس اليوم يُكتب «غائب اليوم كامل». وإذا غاب في درس محدد يُذكر رقم الدرس وعدد الدروس التي حضرها في اليوم نفسه.</p>`);
+  return printDocument(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي', `<h1>${safe(detailed?'تقرير غياب مفصل':'تقرير غياب إجمالي')} — ${safe(r.student_name)}</h1><table class="facts">${facts}</table>${detail}<p class="note">إذا غاب الطالب في كل دروس اليوم يُكتب «غائب اليوم كامل». وإذا غاب في درس محدد يُذكر رقم الدرس وعدد الدروس التي حضرها في اليوم نفسه.</p>`);
 }
 function csvCell(value){
   const text=String(value??'');
@@ -287,11 +287,31 @@ async function exportStudentExcel(){
 function printDocument(title, body){
   const root=$('print-root');
   const previous=document.title;
+  const mac=/Mac/i.test(navigator.userAgent);
   root.innerHTML=body;
   document.title=title;
-  const cleanup=()=>{document.title=previous;root.innerHTML='';window.removeEventListener('afterprint',cleanup);};
+  if(mac) document.body.classList.add('printing');
+  const cleanup=()=>{
+    document.title=previous;
+    root.innerHTML='';
+    document.body.classList.remove('printing');
+    window.removeEventListener('afterprint',cleanup);
+  };
   window.addEventListener('afterprint',cleanup);
-  requestAnimationFrame(()=>requestAnimationFrame(()=>window.print()));
+  return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))).then(async()=>{
+    if(mac){
+      window.__restoreAfterPrint=()=>{window.__restoreAfterPrint=null;cleanup();};
+      try{await api('print_page');}
+      catch(error){cleanup();throw error;}
+      return;
+    }
+    try{
+      const pending=window.print();
+      if(pending&&typeof pending.then==='function') await pending;
+    } finally {
+      cleanup();
+    }
+  });
 }
 
 function renderAlerts() {
@@ -350,8 +370,8 @@ async function dispatchAction(el){
     await api('delete_student',{id});await loadStudents();toast('تم حذف الطالب');return;
   }
   if(action==='history'){await showHistory(id);return;}
-  if(action==='print-summary'){printStudentReport('summary');return;}
-  if(action==='print-detail'){printStudentReport('detail');return;}
+  if(action==='print-summary'){await printStudentReport('summary');return;}
+  if(action==='print-detail'){await printStudentReport('detail');return;}
   if(action==='export-student'){await exportStudentExcel();return;}
   if(action==='edit-alert'){
     const a=config.alerts.find(x=>x.id===id);if(!a)return;

@@ -2425,6 +2425,8 @@ name = "school_attendance"
 version = "1.0.0"
 dependencies = [
  "chrono",
+ "cocoa",
+ "objc",
  "rusqlite",
  "serde",
  "serde_json",
