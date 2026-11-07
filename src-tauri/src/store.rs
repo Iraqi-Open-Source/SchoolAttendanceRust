@@ -44,7 +44,9 @@ pub struct StudentReport {
     pub student_id: i64, pub student_name: String, pub class_name: String, pub section_name: String,
     pub enrollment: String, pub absent_lessons: i64, pub excused_lessons: i64,
     pub present_lessons: i64, pub absent_days: f64, pub full_absent_days: i64,
-    pub partial_absent_lessons: i64, pub absence_text: String, pub alerts: Vec<Alert>,
+    pub partial_absent_lessons: i64, pub absence_text: String,
+    pub full_excused_days: i64, pub partial_excused_lessons: i64, pub excused_text: String,
+    pub alerts: Vec<Alert>,
 }
 #[derive(Serialize)]
 pub struct HistoryRow { pub date: String, pub lesson: i64, pub status: String, pub note: String }
@@ -314,7 +316,7 @@ impl AppDb {
         let path=clean(path,"مسار التصدير",2000)?;
         let report=self.report(section_id)?;
         // UTF-8 BOM enables Arabic text display in common spreadsheet applications.
-        let mut csv=String::from("\u{feff}الطالب,الصف,الشعبة,نوع الدوام,الغياب,أيام الغياب المكافئة,دروس الغياب,دروس الإجازة,دروس الحضور,التنبيهات\r\n");
+        let mut csv=String::from("\u{feff}الطالب,الصف,الشعبة,نوع الدوام,الغياب,أيام الغياب المكافئة,دروس الغياب,الإجازة,دروس الحضور,التنبيهات\r\n");
         fn csv_cell(s:&str)->String {
             let potentially_formula=s.trim_start().chars().next().map(|c|matches!(c,'='|'+'|'-'|'@'|'\t'|'\r')).unwrap_or(false);
             let safe=if potentially_formula {format!("'{}",s)} else {s.to_owned()};
@@ -322,7 +324,7 @@ impl AppDb {
         }
         for r in report {
             let fields=[r.student_name,r.class_name,r.section_name,if r.enrollment=="external"{"انتساب".into()}else{"اعتيادي".into()},
-                r.absence_text,format!("{:.2}",r.absent_days),r.absent_lessons.to_string(),r.excused_lessons.to_string(),r.present_lessons.to_string(),
+                r.absence_text,format!("{:.2}",r.absent_days),r.absent_lessons.to_string(),r.excused_text,r.present_lessons.to_string(),
                 r.alerts.iter().map(|a|a.name.clone()).collect::<Vec<_>>().join(" | ")];
             csv.push_str(&fields.iter().map(|x|csv_cell(x)).collect::<Vec<_>>().join(",")); csv.push_str("\r\n");
         }
@@ -381,7 +383,7 @@ fn report_with(conn:&Connection,section_id:Option<i64>)->R<Vec<StudentReport>> {
         let (student_id,student_name,class_name,section_name,enrollment,absent,excused,present)=entry.map_err(msg)?;
         let external=enrollment=="external";
         let counted_absent=if external{0}else{absent};
-        let (full_days,partial_lessons)=if external{(0,0)}else{*shape.get(&student_id).unwrap_or(&(0,0))};
+        let (full_days,partial_lessons,full_excused,partial_excused)=if external{(0,0,0,0)}else{*shape.get(&student_id).unwrap_or(&(0,0,0,0))};
         let days=counted_absent as f64 / conf.lessons_per_day as f64;
         let alerts=if external {vec![]}else{
             conf.alerts.iter().filter(|a|a.enabled && {
@@ -393,20 +395,23 @@ fn report_with(conn:&Connection,section_id:Option<i64>)->R<Vec<StudentReport>> {
             absent_lessons:counted_absent,excused_lessons:if external{0}else{excused},
             present_lessons:if external{0}else{present},absent_days:days,
             full_absent_days:full_days,partial_absent_lessons:partial_lessons,
-            absence_text:if external{"معفي".into()}else{absence_text(full_days,partial_lessons)},alerts});
+            absence_text:if external{"معفي".into()}else{status_text("غائب",full_days,partial_lessons)},
+            full_excused_days:full_excused,partial_excused_lessons:partial_excused,
+            excused_text:if external{"معفي".into()}else{status_text("مجاز",full_excused,partial_excused)},alerts});
     }
     Ok(report)
 }
 
-fn absence_shape(conn:&Connection,start:&str,end:&str)->R<HashMap<i64,(i64,i64)>> {
-    let mut stmt=conn.prepare("SELECT student_id,COUNT(*),SUM(CASE WHEN status='absent' THEN 1 ELSE 0 END) FROM attendance WHERE date>=?1 AND date<=?2 GROUP BY student_id,date").map_err(msg)?;
-    let rows=stmt.query_map(params![start,end],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).map_err(msg)?;
+fn absence_shape(conn:&Connection,start:&str,end:&str)->R<HashMap<i64,(i64,i64,i64,i64)>> {
+    let mut stmt=conn.prepare("SELECT student_id,COUNT(*),SUM(CASE WHEN status='absent' THEN 1 ELSE 0 END),SUM(CASE WHEN status='excused' THEN 1 ELSE 0 END) FROM attendance WHERE date>=?1 AND date<=?2 GROUP BY student_id,date").map_err(msg)?;
+    let rows=stmt.query_map(params![start,end],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).map_err(msg)?;
     let mut map=HashMap::new();
     for row in rows {
-        let (id,total,absent)=row.map_err(msg)?;
-        if absent==0 {continue;}
-        let entry=map.entry(id).or_insert((0,0));
-        if total>0 && absent==total {entry.0+=1;} else {entry.1+=absent;}
+        let (id,total,absent,excused)=row.map_err(msg)?;
+        if absent==0 && excused==0 {continue;}
+        let entry=map.entry(id).or_insert((0,0,0,0));
+        if absent>0 { if total>0 && absent==total {entry.0+=1;} else {entry.1+=absent;} }
+        if excused>0 { if total>0 && excused==total {entry.2+=1;} else {entry.3+=excused;} }
     }
     Ok(map)
 }
@@ -416,12 +421,12 @@ fn count_phrase(n:i64,day:bool)->String {
     match n {1=>one.into(),2=>two.into(),3..=10=>format!("{n} {few}"),_=>format!("{n} {many}")}
 }
 
-fn absence_text(full_days:i64,partial_lessons:i64)->String {
-    if full_days==0 && partial_lessons==0 {return "لا غياب".into()}
+fn status_text(verb:&str,full_days:i64,partial_lessons:i64)->String {
+    if full_days==0 && partial_lessons==0 {return if verb=="مجاز"{"لا إجازة".into()}else{"لا غياب".into()}}
     let mut parts=Vec::new();
     if full_days>0 {parts.push(count_phrase(full_days,true));}
     if partial_lessons>0 {parts.push(count_phrase(partial_lessons,false));}
-    format!("غائب {}",parts.join(" و"))
+    format!("{verb} {}",parts.join(" و"))
 }
 
 #[cfg(test)]
@@ -445,7 +450,7 @@ mod tests {
     fn excused_not_counted_and_partial_absence(){
         let (db,_,section)=setup();let id=add(&db,section,"regular");
         db.save_sheet(section,"2026-10-01",5,vec![AttendanceRowInput{student_id:id,statuses:vec!["absent".into(),"present".into(),"excused".into(),"present".into(),"absent".into()]}]).unwrap();
-        let r=db.report(None).unwrap();assert_eq!(r[0].absent_lessons,2);assert_eq!(r[0].excused_lessons,1);assert_eq!(r[0].full_absent_days,0);assert_eq!(r[0].partial_absent_lessons,2);assert_eq!(r[0].absence_text,"غائب درسان");assert!((r[0].absent_days-0.4).abs()<0.0001);
+        let r=db.report(None).unwrap();assert_eq!(r[0].absent_lessons,2);assert_eq!(r[0].excused_lessons,1);assert_eq!(r[0].full_absent_days,0);assert_eq!(r[0].partial_absent_lessons,2);assert_eq!(r[0].absence_text,"غائب درسان");assert_eq!(r[0].full_excused_days,0);assert_eq!(r[0].partial_excused_lessons,1);assert_eq!(r[0].excused_text,"مجاز درس واحد");assert!((r[0].absent_days-0.4).abs()<0.0001);
     }
     #[test]
     fn external_excluded(){

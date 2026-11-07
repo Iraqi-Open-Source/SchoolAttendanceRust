@@ -84,8 +84,8 @@ async function refreshHome() {
     renderStat('الصفوف الدراسية',dash.classes,`${dash.sections} شعبة مسجلة`,'▤')+
     renderStat('دروس الغياب اليوم',dash.absent_today,'عدد الحصص المسجلة غياباً','✕')+
     renderStat('تنبيهات فعّالة',alerted.length,'طلاب تجاوزوا أحد الحدود','⚑');
-  $('home-alerts').innerHTML=alerted.length?table(['الطالب','الصف والشعبة','دروس الغياب','أيام مكافئة','التنبيهات'],
-    alerted.slice(0,12).map(r=>`<tr><td class="student-cell">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td>${r.absent_lessons}</td><td>${r.absent_days.toFixed(2)}</td><td>${alertTags(r.alerts)}</td></tr>`).join('')):
+  $('home-alerts').innerHTML=alerted.length?table(['الطالب','الصف والشعبة','الغياب','التنبيهات'],
+    alerted.slice(0,12).map(r=>`<tr><td class="student-cell">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="absence-phrase">${safe(r.absence_text)}</span><small class="absence-sub">${r.absent_days.toFixed(2)} يوم مكافئ • ${r.absent_lessons} درس</small></td><td>${alertTags(r.alerts)}</td></tr>`).join('')):
     empty('لا توجد تنبيهات متجاوزة حتى الآن — ممتاز!','✓');
 }
 function alertTags(alerts) { return alerts.map(a=>`<span class="alert-chip" style="color:${a.color};background:${a.color}18;border:1px solid ${a.color}50">${safe(a.name)}</span>`).join(''); }
@@ -169,8 +169,8 @@ function renderReports(){
   const regular=rs.filter(s=>s.enrollment==='regular');
   const full=regular.reduce((n,s)=>n+(s.full_absent_days||0),0);
   const partial=regular.reduce((n,s)=>n+(s.partial_absent_lessons||0),0);
-  $('reports-table').innerHTML=rs.length?table(['الطالب','الصف / الشعبة','الدوام','الغياب','دروس إجازة','التنبيهات','تفاصيل'],rs.map(r=>
-    `<tr><td class="report-name">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="pill ${r.enrollment==='external'?'external':'regular'}">${r.enrollment==='external'?'انتساب':'اعتيادي'}</span></td><td>${r.enrollment==='external'?'<span class="pill external">معفي</span>':`<span class="absence-phrase">${safe(r.absence_text)}</span><small class="absence-sub">${r.absent_days.toFixed(2)} يوم مكافئ • ${r.absent_lessons} درس</small>`}</td><td class="number">${r.excused_lessons}</td><td>${alertTags(r.alerts)}</td><td><button class="btn mini outline" data-action="history" data-id="${r.student_id}">عرض</button></td></tr>`).join('')):empty('لا توجد نتائج');
+  $('reports-table').innerHTML=rs.length?table(['الطالب','الصف / الشعبة','الدوام','الغياب','الإجازة','التنبيهات','تفاصيل'],rs.map(r=>
+    `<tr><td class="report-name">${safe(r.student_name)}</td><td>${safe(r.class_name)} / ${safe(r.section_name)}</td><td><span class="pill ${r.enrollment==='external'?'external':'regular'}">${r.enrollment==='external'?'انتساب':'اعتيادي'}</span></td><td>${r.enrollment==='external'?'<span class="pill external">معفي</span>':`<span class="absence-phrase">${safe(r.absence_text)}</span><small class="absence-sub">${r.absent_days.toFixed(2)} يوم مكافئ • ${r.absent_lessons} درس</small>`}</td><td>${r.enrollment==='external'?'—':`<span class="absence-phrase">${safe(r.excused_text)}</span><small class="absence-sub">${r.excused_lessons} درس</small>`}</td><td>${alertTags(r.alerts)}</td><td><button class="btn mini outline" data-action="history" data-id="${r.student_id}">عرض</button></td></tr>`).join('')):empty('لا توجد نتائج');
   $('report-summary').textContent=`${rs.length} طالب • ${absencePhrase(full,partial)} • ${rs.filter(s=>s.alerts.length).length} طالب لديه تنبيهات`;
 }
 function countPhrase(n,kind){
@@ -252,7 +252,7 @@ function reportFacts(r, lines){
     ['دروس الغياب', r.enrollment==='external'?'معفي':String(r.absent_lessons)],
     ['أيام الغياب الكاملة', String(lines.filter(x=>x.day).length)],
     ['دروس الغياب في أيام غير مكتملة', String(lines.reduce((n,x)=>n+(x.day?0:x.absentLessons),0))],
-    ['دروس الإجازة', String(r.excused_lessons)],
+    ['الإجازة', r.enrollment==='external'?'معفي':r.excused_text],
     ['دروس الحضور', String(r.present_lessons)],
     ['التنبيهات', alerts]
   ];
